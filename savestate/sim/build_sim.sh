@@ -8,7 +8,7 @@ m68k-linux-gnu-objcopy -O binary prog.elf prog.bin
 rm -f prog.o prog.elf
 python3 -c "
 d=open('prog.bin','rb').read()
-open('prog.hex','w').write('\n'.join('%04x'%(d[i]<<8|d[i+1]) for i in range(0,len(d),2)))"
+open('prog.hex','w').write('\n'.join('%04x'%(d[i]<<8|d[i+1]) for i in range(0,len(d),2))+'\n')"
 # fx68k with packed structs: Verilator does not take its unpacked ones
 mkdir -p fx
 sed -e 's/^typedef struct {/typedef struct packed {/' \

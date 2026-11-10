@@ -682,7 +682,16 @@ always @(posedge clk_sys) begin
 	if(~old_save & bk_save & bk_pending) bk_save_req <= 1;
 
 	if(!bk_state) begin
-		if(bk_ena & ~ss_busy & (bk_load_req | bk_save_req | ss_bk_force)) begin
+		if(bk_ena & ss_bk_force) begin
+			// a savestate needs the file to exist and to hold the backup area
+			bk_state <= 1;
+			bk_loading <= 0;
+			bk_lba <= 0;
+			bk_rd  <= 0;
+			bk_wr  <= 1;
+			bk_save_req <= 0;
+		end
+		else if(bk_ena & ~ss_busy & (bk_load_req | bk_save_req)) begin
 			bk_state <= 1;
 			bk_loading <= bk_load_req;
 			bk_lba <= 0;

@@ -14,10 +14,18 @@ static std::vector<uint16_t> file;          // save file, 16-bit words
 static std::vector<uint32_t> trace;
 static int info_last = -1;
 
+static long watch_base = -1;
 static void tick() {
+	static int oas = 1;
 	t->clk = 0; t->eval();
 	t->clk = 1; t->eval();
 	cyc++;
+	if (watch_base >= 0) {
+		long rel = (long)trace.size() - watch_base;
+		if (rel >= 188 && rel <= 202 && !t->dbg_as && oas)
+			printf("    [%ld] %s %06x fc%d d %04x at %llu\n", rel, (t->dbg_fc & 1) ? "R" : "W", t->dbg_addr * 2, t->dbg_fc >> 1, t->dbg_din, (unsigned long long)cyc);
+	}
+	oas = t->dbg_as;
 	if (t->trace_we) trace.push_back(t->trace_d);
 	if (t->info_req) { info_last = t->info; printf("  info %d at %llu\n", t->info, (unsigned long long)cyc); }
 }
@@ -93,6 +101,7 @@ int main(int argc, char **argv) {
 		run(1500000 + round * 777777);
 		printf("round %d: save at cycle %llu, irqs %u, trace %zu\n", round, (unsigned long long)cyc, t->irq_count, trace.size());
 		request(false, 1);
+		if (round == 4 && getenv("WATCH")) { watch_base = trace.size(); printf("  -- after save\n"); }
 		if (getenv("QUICK")) { printf("quick exit, info %d\n", info_last); return 0; }
 		size_t t0 = trace.size();
 		uint32_t irq0 = t->irq_count;
@@ -100,12 +109,15 @@ int main(int argc, char **argv) {
 		std::vector<uint32_t> after_save(trace.begin() + t0, trace.end());
 		uint32_t irqs_save = t->irq_count - irq0;
 
+		watch_base = -1;
 		run(900000 + round * 333333);   // the program goes on somewhere else
 		request(true, 1);
 		if (info_last != 19) { printf("  load failed: info %d\n", info_last); fails++; continue; }
 		size_t t1 = trace.size();
+		if (round == 4 && getenv("WATCH")) { watch_base = t1; printf("  -- after load\n"); }
 		irq0 = t->irq_count;
 		run(1200000);
+		watch_base = -1;
 		std::vector<uint32_t> after_load(trace.begin() + t1, trace.end());
 		uint32_t irqs_load = t->irq_count - irq0;
 
@@ -116,6 +128,7 @@ int main(int argc, char **argv) {
 		       irqs_save, irqs_load, bad == n ? "match\n" : "MISMATCH");
 		if (bad != n) {
 			printf(" at %zu: %08x vs %08x\n", bad, after_save[bad], after_load[bad]);
+			for (size_t i = (bad > 12 ? bad - 12 : 0); i < bad + 6 && i < n; i++) printf("    %zu: %08x %08x\n", i, after_save[i], after_load[i]);
 			fails++;
 		}
 		if (n < 1000) { printf("  too little trace\n"); fails++; }
