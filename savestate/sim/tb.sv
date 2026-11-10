@@ -144,18 +144,18 @@ end
 
 assign din = (addr[23:20] == 0) ? rom[addr[11:1]] : wram_cs ? wram_q : 16'hFFFF;
 
-// trace
+// trace: long writes to $200000, taken when the data strobes are asserted
 always @(posedge clk) begin
-	reg old_as;
-	reg hi;
-	old_as   <= as_n;
+	reg old_ds;
+	wire ds = ~as_n & (~uds_n | ~lds_n) & ~rw;
+	old_ds   <= ds;
 	trace_we <= 0;
-	if (~as_n & old_as & ~rw & addr == 23'h100000) begin
-		if (!addr[1]) trace_d[31:16] <= dout;
-	end
-	if (~as_n & old_as & ~rw & addr == 23'h100001) begin
-		trace_d[15:0] <= dout;
-		trace_we <= 1;
+	if (ds & ~old_ds) begin
+		if (addr == 23'h100000) trace_d[31:16] <= dout;
+		if (addr == 23'h100001) begin
+			trace_d[15:0] <= dout;
+			trace_we <= 1;
+		end
 	end
 end
 
