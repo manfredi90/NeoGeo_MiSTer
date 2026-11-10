@@ -1,0 +1,9 @@
+obj_dir/
+obj_dbg/
+fx/
+*.mem
+*.log
+*.vcd
+*.bin
+*.hex
+dbg_main.cpp
