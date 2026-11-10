@@ -41,6 +41,32 @@ module emu
 	`include "sys/emu_ports.vh"
 );
 
+// savestates (rtl/ss/ss_ctrl.sv, logic at the end of the file)
+localparam [3:0] SS_Z80 = 1, SS_FVRAM = 2, SS_PAL = 3, SS_XRAM = 4, SS_PVC = 5, SS_WRAM = 6, SS_SVRAM = 7, SS_BACKUP = 8;
+wire         ss_busy, ss_freeze, ss_allow;
+wire         ss_irq7, ss_cpu_drive;
+wire  [15:0] ss_cpu_din;
+wire         ss_z80_hold, ss_z80_rst, ss_z80_dirset, ss_z80_boundary;
+wire [213:0] ss_z80_reg, ss_z80_dir;
+wire         ss_ym_ovr, ss_ym_wr;
+wire   [1:0] ss_ym_a;
+wire   [7:0] ss_ym_d;
+wire         ss_hook_ld, ss_wd_clear;
+wire [511:0] ss_hook_do, ss_hook_di;
+wire         ss_mem_act, ss_mem_we;
+wire   [3:0] ss_mem_sel;
+wire  [14:0] ss_mem_addr;
+wire  [15:0] ss_mem_d;
+wire  [15:0] ss_wram_q, ss_pvc_q;
+wire         ss_sd_act, ss_sd_rd, ss_sd_wr, ss_bk_force;
+wire  [31:0] ss_sd_lba;
+wire   [5:0] ss_sd_blk_cnt;
+wire  [15:0] ss_sd_buff_din;
+wire   [1:0] ss_slot;
+wire         ss_status_update, ss_info_req;
+wire   [7:0] ss_info;
+wire         ss_p;
+
 assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
@@ -51,13 +77,13 @@ assign AUDIO_MIX = status[6:5];
 assign AUDIO_L = snd_mix_l[16:1];
 assign AUDIO_R = snd_mix_r[16:1];
 
-assign LED_USER  = status[0] | bk_pending;
+assign LED_USER  = status[0] | bk_pending | ss_busy;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = osd_btn;
 assign VGA_SCALER= 0;
 assign VGA_DISABLE = 0;
-assign HDMI_FREEZE = 0;
+assign HDMI_FREEZE = ss_freeze;	// keep the last picture while the system is frozen for a savestate
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
@@ -145,6 +171,10 @@ localparam CONF_STR = {
 	"D4RC,Save Memory Card;",
 	"OO,Autosave,OFF,ON;",
 	"-;",
+	"D6O[65:64],Savestate Slot,1,2,3,4;",
+	"D6R[66],Save state (Alt+F1-F4);",
+	"D6R[67],Restore state (F1-F4);",
+	"-;",
 	"O2,CD Type,CD,CDZ;",
 	"OTU,CD Speed,1x,2x,3x,4x;",
 	"OAB,CD Region,US,EU,JP,AS;",
@@ -168,9 +198,34 @@ localparam CONF_STR = {
 	"P1-;",
 	"-;",
 	"RE,Reset & apply;",  // decouple manual reset from system reset 
-	"J1,A,B,C,D,Start,Select,Coin,ABC,A+B,C+D;",	// ABC is a special key to press A+B+C at once, useful for keyboards that don't allow more than 2 keypresses at once; A+B/C+D are useful for fighting games (Samurai Shodown, Garou, etc.)
+	"J1,A,B,C,D,Start,Select,Coin,ABC,A+B,C+D,Savestates;",	// ABC is a special key to press A+B+C at once, useful for keyboards that don't allow more than 2 keypresses at once; A+B/C+D are useful for fighting games (Samurai Shodown, Garou, etc.)
 	"jn,A,B,X,Y,Start,Select,L,R,L2,R2;",	// name mapping 
 	"jp,B,A,D,C,Start,Select,L,R,L2,R2;",	// positional mapping consistent with NeoGeoCD controller
+	"I,",
+	",",
+	",",
+	",",
+	",",
+	"Slot=DPAD|Save/Load=Start+DPAD,",
+	"Active Slot 1,",
+	"Active Slot 2,",
+	"Active Slot 3,",
+	"Active Slot 4,",
+	"Save to state 1,",
+	"Restore state 1,",
+	"Save to state 2,",
+	"Restore state 2,",
+	"Save to state 3,",
+	"Restore state 3,",
+	"Save to state 4,",
+	"Restore state 4,",
+	"State saved,",
+	"State loaded,",
+	"Empty slot,",
+	"State from other settings,",
+	"No save file,",
+	"Savestate failed,",
+	"Not on Neo Geo CD;",
 	"V,v",`BUILD_DATE						// 
 };
 
@@ -193,10 +248,20 @@ pll pll
 	.locked(locked)
 );
 
+// All the clock enables of the system come from here: holding it freezes the whole
+// system (savestates). The phase is kept, so it goes on as if no time had passed.
 reg CLK_EN_24M_N, CLK_EN_24M_P;
 always @(posedge CLK_48M) begin
-	CLK_EN_24M_N <= ~CLK_EN_24M_N;
-	CLK_EN_24M_P <= CLK_EN_24M_N;
+	reg ph = 0;
+	if (ss_freeze) begin
+		CLK_EN_24M_N <= 0;
+		CLK_EN_24M_P <= 0;
+	end
+	else begin
+		CLK_EN_24M_N <= ~ph;
+		CLK_EN_24M_P <= ph;
+		ph <= ~ph;
+	end
 end
 
 wire [63:0] reconfig_to_pll;
@@ -300,7 +365,7 @@ end
 // VD 0: Save file
 wire  [1:0] img_mounted;
 wire        sd_buff_wr, img_readonly;
-wire  [7:0] sd_buff_addr;	// Address inside 256-word sector
+wire [12:0] sd_buff_addr;	// Address inside 256-word sector (up to 32 sectors for the savestates)
 wire [15:0] sd_buff_dout;
 wire [15:0] sd_buff_din[2];
 wire [15:0] sd_req_type;
@@ -319,7 +384,7 @@ wire  [1:0] buttons;
 wire [10:0] ps2_key;
 wire [24:0] ps2_mouse;
 wire        forced_scandoubler;
-wire [63:0] status;
+wire [127:0] status;
 
 wire [64:0] rtc;
 
@@ -350,8 +415,12 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.buttons(buttons),
 	.ps2_key(ps2_key),
 
-	.status(status),				// status read (32 bits)
-	.status_menumask({status[22], 9'd0, en216p, bk_autosave | ~bk_pending, ~dbg_menu,~SYSTEM_MVS,1'b0,SYSTEM_CDx}),
+	.status(status),
+	.status_in({status[127:66], ss_slot, status[63:0]}),
+	.status_set(ss_status_update),
+	.status_menumask({status[22], 8'd0, ~ss_allow, en216p, bk_autosave | ~bk_pending, ~dbg_menu,~SYSTEM_MVS,1'b0,SYSTEM_CDx}),
+	.info_req(ss_info_req),
+	.info(ss_info),
 
 	.RTC(rtc),
 	.sdram_sz(sdram_sz),
@@ -366,6 +435,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait),
 
 	.sd_lba(sd_lba),
+	.sd_blk_cnt('{6'd0, ss_sd_blk_cnt}),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
@@ -542,12 +612,12 @@ wire       rom_wait   = cfg[28];    // ROMWAIT from cart. 0 - Full speed, 1 - 1 
 wire [1:0] p_wait     = cfg[30:29]; // PWAIT from cart. 0 - Full speed, 1 - 1 wait cycle, 2 - 2 cycles
 wire       cd_en      = cfg[31];    // Neo CD
 
-// Memory card and backup ram image save/load
-assign sd_rd[0]       = bk_rd;
-assign sd_wr[0]       = bk_wr;
-assign sd_lba[0]      = bk_lba;
-assign sd_buff_din[0] = bk_dout;
-wire   bk_ack         = sd_ack[0];
+// Memory card and backup ram image save/load, savestates
+assign sd_rd[0]       = ss_sd_act ? ss_sd_rd       : bk_rd;
+assign sd_wr[0]       = ss_sd_act ? ss_sd_wr       : bk_wr;
+assign sd_lba[0]      = ss_sd_act ? ss_sd_lba      : bk_lba;
+assign sd_buff_din[0] = ss_sd_act ? ss_sd_buff_din : bk_dout;
+wire   bk_ack         = sd_ack[0] & ~ss_sd_act;
 
 assign sd_rd[1]       = 0;
 assign sd_wr[1]       = 0;
@@ -594,6 +664,7 @@ wire bk_save    = status[12] | (bk_autosave & OSD_STATUS);
 reg  bk_loading = 0;
 reg  bk_state   = 0;
 
+reg bk_load_req = 0, bk_save_req = 0;
 always @(posedge clk_sys) begin
 	reg old_downloading = 0;
 	reg old_load = 0, old_save = 0, old_ack;
@@ -606,13 +677,19 @@ always @(posedge clk_sys) begin
 
 	if(~old_ack & bk_ack) {bk_rd, bk_wr} <= 0;
 
+	// requests that come while a savestate uses the save file wait for it
+	if(~old_load & bk_load) bk_load_req <= 1;
+	if(~old_save & bk_save & bk_pending) bk_save_req <= 1;
+
 	if(!bk_state) begin
-		if(bk_ena & ((~old_load & bk_load) | (~old_save & bk_save & bk_pending))) begin
+		if(bk_ena & ~ss_busy & (bk_load_req | bk_save_req | ss_bk_force)) begin
 			bk_state <= 1;
-			bk_loading <= bk_load;
+			bk_loading <= bk_load_req;
 			bk_lba <= 0;
-			bk_rd  <=  bk_load;
-			bk_wr  <= ~bk_load;
+			bk_rd  <=  bk_load_req;
+			bk_wr  <= ~bk_load_req;
+			bk_load_req <= 0;
+			bk_save_req <= 0;
 		end
 		// always load backup so it will erase the memory if doesn't exist
 		if(old_downloading & ~downloading & bk_ena) begin
@@ -1108,7 +1185,8 @@ neo_d0 D0(
 	.SDRD0(SDRD0),	.SDRD1(SDRD1),
 	.n2610CS(n2610CS), .n2610RD(n2610RD), .n2610WR(n2610WR),
 	.P1_OUT(P1_OUT), .P2_OUT(P2_OUT),
-	.BNK(BNK)
+	.BNK(BNK),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[206:196]), .SS_DO(ss_hook_do[206:196])
 );
 
 // Re-priority-encode the interrupt lines with the CD_IRQ one (IPL* are active-low)
@@ -1142,7 +1220,7 @@ cpu_68k M68KCPU(
 	.FX68K_DATAIN(FX68K_DATAIN), .FX68K_DATAOUT(FX68K_DATAOUT),
 	.nLDS(nLDS), .nUDS(nUDS), .nAS(nAS), .M68K_RW(M68K_RW),
 	.nDTACK(nDTACK_ADJ),	// nDTACK
-	.IPL2(1'b1), .IPL1(IPL_OUT[1]), .IPL0(IPL_OUT[0]),
+	.IPL2(~ss_irq7), .IPL1(IPL_OUT[1] & ~ss_irq7), .IPL0(IPL_OUT[0] & ~ss_irq7),	// level 7: savestate handler
 	.FC2(FC2), .FC1(FC1), .FC0(FC0),
 	.nBG(nBG), .nBR(nBR), .nBGACK(nBGACK),
 	.SYSTEM_CDx(SYSTEM_CDx)
@@ -1157,7 +1235,7 @@ assign M68K_DATA_BYTE_MASK = (~|{nLDS, nUDS}) ? M68K_DATA :
 										16'h0000;
 
 assign M68K_DATA = M68K_RW ? 16'bzzzzzzzz_zzzzzzzz : FX68K_DATAOUT;
-assign FX68K_DATAIN = M68K_RW ? M68K_DATA_BYTE_MASK : 16'h0000;
+assign FX68K_DATAIN = M68K_RW ? (ss_cpu_drive ? ss_cpu_din : M68K_DATA_BYTE_MASK) : 16'h0000;
 
 assign FIXD = CD_USE_FIX ? 8'bzzzz_zzzz : S2H1 ? SROM_DATA[15:8] : SROM_DATA[7:0];
 
@@ -1182,9 +1260,10 @@ dpram #(15) WRAML(
 	.q_a(WRAML_OUT),
 
 	.clock_b(CLK_48M),
-	.address_b(TRASH_ADDR),
-	.data_b(TRASH_ADDR[7:0]),
-	.wren_b(~nRESET_CORE)
+	.address_b(ss_mem_act ? ss_mem_addr : TRASH_ADDR),
+	.data_b(ss_mem_act ? ss_mem_d[7:0] : TRASH_ADDR[7:0]),
+	.wren_b(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_WRAM) : ~nRESET_CORE),
+	.q_b(ss_wram_q[7:0])
 );
 
 dpram #(15) WRAMU(
@@ -1195,9 +1274,10 @@ dpram #(15) WRAMU(
 	.q_a(WRAMU_OUT),
 
 	.clock_b(CLK_48M),
-	.address_b(TRASH_ADDR),
-	.data_b(TRASH_ADDR[7:0]),
-	.wren_b(~nRESET_CORE)
+	.address_b(ss_mem_act ? ss_mem_addr : TRASH_ADDR),
+	.data_b(ss_mem_act ? ss_mem_d[15:8] : TRASH_ADDR[7:0]),
+	.wren_b(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_WRAM) : ~nRESET_CORE),
+	.q_b(ss_wram_q[15:8])
 );
 
 wire [23:0] P2ROM_ADDR_PVC, P2ROM_ADDR_SMA;
@@ -1217,7 +1297,10 @@ neo_pvc neo_pvc
 	.nPORTOEU(nPORTOEU),
 	.nPORTWEL(nPORTWEL),
 	.nPORTWEU(nPORTWEU),
-	.P2_ADDR(P2ROM_ADDR_PVC)
+	.P2_ADDR(P2ROM_ADDR_PVC),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[309:254]), .SS_DO(ss_hook_do[309:254]),
+	.SS_RAM_ACT(ss_mem_act), .SS_RAM_ADDR(ss_mem_addr[11:0]), .SS_RAM_D(ss_mem_d),
+	.SS_RAM_WE(ss_mem_we & ss_mem_sel == SS_PVC), .SS_RAM_Q(ss_pvc_q)
 );
 
 neo_sma neo_sma
@@ -1234,7 +1317,8 @@ neo_sma neo_sma
 	.nPORTOEU(nPORTOEU),
 	.nPORTWEL(nPORTWEL),
 	.nPORTWEU(nPORTWEU),
-	.P2_ADDR(P2ROM_ADDR_SMA)
+	.P2_ADDR(P2ROM_ADDR_SMA),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[350:310]), .SS_DO(ss_hook_do[350:310])
 );
 
 wire XRAM_CS = ~nPORTADRS && !M68K_ADDR[19:13] && xram;
@@ -1250,7 +1334,7 @@ dpram #(12) XRAML(
 
 	.clock_b(clk_sys),
 	.address_b(memcard_addr),
-	.wren_b(memcard_wr & xram),
+	.wren_b(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_XRAM) : (memcard_wr & xram)),
 	.data_b(sd_buff_dout[7:0]),
 	.q_b(xram_buff_dout[7:0])
 );
@@ -1264,7 +1348,7 @@ dpram #(12) XRAMU(
 
 	.clock_b(clk_sys),
 	.address_b(memcard_addr),
-	.wren_b(memcard_wr & xram),
+	.wren_b(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_XRAM) : (memcard_wr & xram)),
 	.data_b(sd_buff_dout[15:8]),
 	.q_b(xram_buff_dout[15:8])
 );
@@ -1281,8 +1365,8 @@ assign M68K_DATA[15:8] = nWRU ? 8'bzzzzzzzz : SYSTEM_CDx ? PROM_DATA[15:8] : WRA
 wire save_wr    =  sd_buff_wr & bk_ack;
 wire sram_wr    = ~bk_lba[7] & save_wr; // 000000~00FFFF
 wire memcard_wr =  bk_lba[7] & save_wr; // 010000-011FFF
-wire [14:0] sram_addr    = {bk_lba[6:0], sd_buff_addr}; //64KB
-wire [11:0] memcard_addr = {bk_lba[3:0], sd_buff_addr}; //8KB
+wire [14:0] sram_addr    = ss_mem_act ? ss_mem_addr       : {bk_lba[6:0], sd_buff_addr[7:0]}; //64KB
+wire [11:0] memcard_addr = ss_mem_act ? ss_mem_addr[11:0] : {bk_lba[3:0], sd_buff_addr[7:0]}; //8KB
 
 // Backup RAM
 wire nBWL = nSRAMWEL | nSRAMWEN_G;
@@ -1298,7 +1382,7 @@ backup BACKUP
 	.SRAM_OUT(SRAM_OUT),
 	.clk_sys(clk_sys),
 	.sram_addr(sram_addr),
-	.sram_wr(sram_wr),
+	.sram_wr(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_BACKUP) : sram_wr),
 	.sd_buff_dout(sd_buff_dout),
 	.sd_buff_din_sram(sram_buff_dout)
 );
@@ -1320,7 +1404,7 @@ memcard MEMCARD(
 	.M68K_DATA(M68K_DATA[7:0]),
 	.clk_sys(clk_sys),
 	.memcard_addr(memcard_addr),
-	.memcard_wr(memcard_wr),
+	.memcard_wr(memcard_wr & ~ss_mem_act),
 	.memcard_din(sd_buff_dout),
 	.memcard_dout(memcard_buff_dout)
 );
@@ -1335,7 +1419,8 @@ zmc ZMC(
 	.nRESET(nRESET),
 	.nSDRD0(SDRD0),
 	.SDA_L(SDA[1:0]), .SDA_U(SDA[15:8]),
-	.MA(MA)
+	.MA(MA),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[248:223]), .SS_DO(ss_hook_do[248:223])
 );
 
 // Bankswitching for the PORT zone, do all games use a 1MB window ?
@@ -1345,7 +1430,8 @@ begin
 	reg nPORTWEL_d;
 	nPORTWEL_d <= nPORTWEL;
 
-	if (!nRESET || SYSTEM_CDx) P_BANK <= 0;
+	if (ss_hook_ld) P_BANK <= ss_hook_di[252:249];
+	else if (!nRESET || SYSTEM_CDx) P_BANK <= 0;
 	else if (~nPORTWEL & nPORTWEL_d) begin
 		if(~ms5p_bank) P_BANK <= M68K_DATA[3:0];
 		else if(&M68K_ADDR[19:4] && M68K_ADDR[3:1] == 2) P_BANK <= M68K_DATA[7:4] - 1'd1;
@@ -1410,7 +1496,8 @@ com COM(
 	.nRESET(nRESET),
 	.CLK_48M(CLK_48M),
 	.nPORTOEL(nPORTOEL), .nPORTOEU(nPORTOEU), .nPORTWEL(nPORTWEL),
-	.M68K_DIN(COM_DOUT)
+	.M68K_DIN(COM_DOUT),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[253]), .SS_DO(ss_hook_do[253])
 );
 
 assign M68K_DATA = (cart_chip == 2) ? COM_DOUT : 16'bzzzzzzzz_zzzzzzzz;
@@ -1421,7 +1508,8 @@ syslatch SL(
 	.CLK_EN_68K_P(CLK_EN_68K_P),
 	.M68K_ADDR(M68K_ADDR[4:1]),
 	.nBITW1(nBITW1),
-	.SHADOW(SHADOW), .nVEC(nVEC), .nCARDWEN(nCARDWEN),	.CARDWENB(CARDWENB), .nREGEN(nREGEN), .nSYSTEM(nSYSTEM), .nSRAMWEN(nSRAMWEN), .PALBNK(PALBNK)
+	.SHADOW(SHADOW), .nVEC(nVEC), .nCARDWEN(nCARDWEN),	.CARDWENB(CARDWENB), .nREGEN(nREGEN), .nSYSTEM(nSYSTEM), .nSRAMWEN(nSRAMWEN), .PALBNK(PALBNK),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[195:188]), .SS_DO(ss_hook_do[195:188])
 );
 
 wire nSRAMWEN_G = SYSTEM_MVS ? nSRAMWEN : 1'b1;	// nSRAMWEN is only for MVS
@@ -1504,7 +1592,8 @@ neo_c1 C1(
 	.nBITW0(nBITW0), .nBITW1(nBITW1),
 	.nDIPRD0(nDIPRD0), .nDIPRD1(nDIPRD1),
 	.nPAL_ZONE(nPAL),
-	.SYSTEM_TYPE({SYSTEM_CDx, SYSTEM_MVS})
+	.SYSTEM_TYPE({SYSTEM_CDx, SYSTEM_MVS}),
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[222:207]), .SS_DO(ss_hook_do[222:207])
 );
 
 reg       use_sp = 0;
@@ -1583,17 +1672,17 @@ assign PBUS[23:16] = nPBUS_OUT_EN ? LO_ROM_DATA : 8'bzzzzzzzz;
 
 spram #(11,16) UFV(
 	.clock(CLK_48M),
-	.address(FAST_VRAM_ADDR),
-	.data(FAST_VRAM_DATA_OUT),
-	.wren(~CWE),
+	.address(ss_mem_act ? ss_mem_addr[10:0] : FAST_VRAM_ADDR),
+	.data(ss_mem_act ? ss_mem_d : FAST_VRAM_DATA_OUT),
+	.wren(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_FVRAM) : ~CWE),
 	.q(FAST_VRAM_DATA_IN)
 );
 
 spram #(15,16) USV(
 	.clock(CLK_48M),
-	.address(SLOW_VRAM_ADDR),
-	.data(SLOW_VRAM_DATA_OUT),
-	.wren(~BWE),
+	.address(ss_mem_act ? ss_mem_addr : SLOW_VRAM_ADDR),
+	.data(ss_mem_act ? ss_mem_d : SLOW_VRAM_DATA_OUT),
+	.wren(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_SVRAM) : ~BWE),
 	.q(SLOW_VRAM_DATA_IN)
 );
 
@@ -1601,7 +1690,11 @@ wire [18:11] MA;
 wire [7:0] Z80_RAM_DATA;
 
 // 2KB Z80 work RAM (Cart)
-spram #(11) Z80RAM(.clock(CLK_48M), .address(SDA[10:0]), .data(SDD_OUT), .wren(~(nZRAMCS | nSDMWR)), .q(Z80_RAM_DATA));
+spram #(11) Z80RAM(.clock(CLK_48M),
+	.address(ss_mem_act ? ss_mem_addr[10:0] : SDA[10:0]),
+	.data(ss_mem_act ? ss_mem_d[7:0] : SDD_OUT),
+	.wren(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_Z80) : ~(nZRAMCS | nSDMWR)),
+	.q(Z80_RAM_DATA));
 
 // 64KB Z80 work RAM (CD)
 assign CD_Z80_RAM_OUT = SDA[0] ? WRAMU_OUT : WRAML_OUT;
@@ -1638,13 +1731,14 @@ wire Z80_nWAIT = (z80rd_req == z80rd_ack);
 
 cpu_z80 Z80CPU(
 	.CLK(CLK_48M),
-	.CLK4P_EN(CLK_EN_4M_P),
-	.CLK4N_EN(CLK_EN_4M_N),
-	.nRESET(Z80_nRESET),
+	.CLK4P_EN(CLK_EN_4M_P & ~ss_z80_hold),
+	.CLK4N_EN(CLK_EN_4M_N & ~ss_z80_hold),
+	.nRESET(Z80_nRESET & ~ss_z80_rst),
 	.SDA(Z80_SDA), .SDD_IN(SDD_IN), .SDD_OUT(Z80_SDD_OUT),
 	.nIORQ(nIORQ),	.nMREQ(Z80_nMREQ), .nRD(Z80_nSDRD), .nWR(Z80_nSDWR),
 	.nBUSRQ(~CD_USE_Z80), .nBUSAK(nBUSAK),
-	.nINT(Z80_nINT), .nNMI(Z80_nNMI), .nWAIT(Z80_nWAIT)
+	.nINT(Z80_nINT), .nNMI(Z80_nNMI), .nWAIT(Z80_nWAIT),
+	.SS_REG(ss_z80_reg), .SS_DIR(ss_z80_dir), .SS_DIRSET(ss_z80_dirset), .SS_BOUNDARY(ss_z80_boundary)
 );
 
 assign { SDA, SDD_OUT } = ~CD_HAS_Z80_BUS ? { Z80_SDA, Z80_SDD_OUT } : DMA_RUNNING ? { DMA_ADDR_OUT[16:1], DMA_DATA_OUT[7:0] } : { M68K_ADDR[16:1], M68K_DATA[7:0] };
@@ -1922,9 +2016,9 @@ end
 jt10 YM2610(
 	.rst(~Z80_nRESET),
 	.clk(CLK_48M), .cen((CLK_EN_4M_P | CLK_EN_4M_N) & adpcm_en),
-	.addr(SDA[1:0]),
-	.din(SDD_OUT), .dout(YM2610_DOUT),
-	.cs_n(n2610CS), .wr_n(n2610WR),
+	.addr(ss_ym_ovr ? ss_ym_a : SDA[1:0]),
+	.din(ss_ym_ovr ? ss_ym_d : SDD_OUT), .dout(YM2610_DOUT),
+	.cs_n(ss_ym_ovr ? ~ss_ym_wr : n2610CS), .wr_n(ss_ym_ovr ? ~ss_ym_wr : n2610WR),
 	.irq_n(Z80_nINT),
 	.adpcma_addr(ADPCMA_ADDR), .adpcma_bank(ADPCMA_BANK), .adpcma_roe_n(nSDROE), .adpcma_data(adpcma_d),
 	.adpcmb_addr(ADPCMB_ADDR), .adpcmb_roe_n(nSDPOE), .adpcmb_data(SYSTEM_CDx ? 8'h08 : adpcmb_d),	// CD has no ADPCM-B
@@ -1977,7 +2071,9 @@ lspc2_a2_sync	LSPC(
 	.FVRAM_DATA_IN(FAST_VRAM_DATA_IN), .FVRAM_DATA_OUT(FAST_VRAM_DATA_OUT),
 	.CWE(CWE),
 	.VMODE(video_mode),
-	.FIXMAP_ADDR(FIXMAP_ADDR)	// Extracted for NEO-CMC
+	.FIXMAP_ADDR(FIXMAP_ADDR),	// Extracted for NEO-CMC
+	.SS_LD(ss_hook_ld), .SS_DI(ss_hook_di[187:0]), .SS_DO(ss_hook_do[187:0]),
+	.SS_P(ss_p)
 );
 
 wire DOGE = SYSTEM_CDx ? ~CD_UPLOAD_EN : 1'b1; // UPLOAD_EN disables Watchdog?
@@ -1997,16 +2093,16 @@ neo_b1 B1(
 	.TMS0(CHG), .LD1(LD1), .LD2(LD2), .SS1(SS1), .SS2(SS2),
 	.PA(PAL_RAM_ADDR),
 	.EN_FIX(FIX_EN),
-	.DOGE(DOGE),
+	.DOGE(DOGE & ~ss_wd_clear),
 	.nRST(nRESET_CORE),
 	.nRESET(nRESET)
 );
 
 spram #(13,16) PALRAM(
 	.clock(CLK_48M), 	// Was CLK_12M
-	.address({PALBNK, PAL_RAM_ADDR}),
-	.data(M68K_DATA),
-	.wren(~nPAL_WE),
+	.address(ss_mem_act ? ss_mem_addr[12:0] : {PALBNK, PAL_RAM_ADDR}),
+	.data(ss_mem_act ? ss_mem_d : M68K_DATA),
+	.wren(ss_mem_act ? (ss_mem_we & ss_mem_sel == SS_PAL) : ~nPAL_WE),
 	.q(PAL_RAM_DATA)
 );
 
@@ -2115,6 +2211,134 @@ video_mixer #(.LINE_LENGTH(320), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 	.VSync(vs),
 	.HBlank(hblank),
 	.VBlank(vblank)
+);
+
+
+//////////////////   SAVESTATES   ///////////////////
+//
+// Chip registers saved in the state (ss_hook_*). The bit positions are part of the
+// state format: never move a field, only add new ones above the last one.
+//   [187:0]   LSPC (rtl/video/lspc2_a2.v)     [195:188] system latch
+//   [206:196] NEO-D0 and Z80 control          [222:207] sound command/reply latches
+//   [248:223] Z80 ROM banking (NEO-ZMC)       [252:249] P2 bank
+//   [253]     COM chip                        [309:254] PVC
+//   [350:310] SMA
+
+assign ss_hook_do[511:351] = 0;
+
+wire [15:0] ss_mem_q =
+	(ss_mem_sel == SS_Z80)    ? {8'd0, Z80_RAM_DATA} :
+	(ss_mem_sel == SS_FVRAM)  ? FAST_VRAM_DATA_IN :
+	(ss_mem_sel == SS_PAL)    ? PAL_RAM_DATA :
+	(ss_mem_sel == SS_XRAM)   ? xram_buff_dout :
+	(ss_mem_sel == SS_PVC)    ? ss_pvc_q :
+	(ss_mem_sel == SS_WRAM)   ? ss_wram_q :
+	(ss_mem_sel == SS_SVRAM)  ? SLOW_VRAM_DATA_IN :
+	(ss_mem_sel == SS_BACKUP) ? sram_buff_dout :
+	                            16'h0000;
+
+assign ss_allow = bk_ena & ~SYSTEM_CDx;
+
+wire ss_ui_save, ss_ui_load, ss_ui_info_req;
+wire [7:0] ss_ui_info;
+
+savestate_ui #(.INFO_TIMEOUT_BITS(25)) savestate_ui
+(
+	.clk(CLK_48M),
+	.ps2_key(ps2_key),
+	.allow_ss(ss_allow),
+	.joySS(joystick_0[14]),
+	.joyRight(joystick_0[0]),
+	.joyLeft(joystick_0[1]),
+	.joyDown(joystick_0[2]),
+	.joyUp(joystick_0[3]),
+	.joyStart(joystick_0[8]),
+	.status_slot(status[65:64]),
+	.OSD_saveload(status[67:66]),
+	.ss_save(ss_ui_save),
+	.ss_load(ss_ui_load),
+	.ss_info_req(ss_ui_info_req),
+	.ss_info(ss_ui_info),
+	.statusUpdate(ss_status_update),
+	.selected_slot(ss_slot)
+);
+
+wire ss_ctrl_info_req;
+wire [7:0] ss_ctrl_info;
+assign ss_info_req = ss_ui_info_req | ss_ctrl_info_req;
+assign ss_info     = ss_ctrl_info_req ? ss_ctrl_info : ss_ui_info;
+
+ss_ctrl ss_ctrl
+(
+	.clk(CLK_48M),
+	.reset(~nRESET),
+
+	.save(ss_ui_save),
+	.load(ss_ui_load),
+	.slot(ss_slot),
+	.allow(ss_allow & ~ioctl_download & ~status[0] & ~bk_state),
+	.cd_system(SYSTEM_CDx),
+	.sys_flags({14'd0, status[22], SYSTEM_MVS}),
+	.info_req(ss_ctrl_info_req),
+	.info(ss_ctrl_info),
+	.busy(ss_busy),
+
+	.irq7(ss_irq7),
+	.cpu_addr(M68K_ADDR),
+	.cpu_as_n(nAS),
+	.cpu_uds_n(nUDS),
+	.cpu_lds_n(nLDS),
+	.cpu_rw(M68K_RW),
+	.cpu_fc({FC2, FC1, FC0}),
+	.cpu_dout(FX68K_DATAOUT),
+	.cpu_drive(ss_cpu_drive),
+	.cpu_din(ss_cpu_din),
+
+	.z80_hold(ss_z80_hold),
+	.z80_boundary(ss_z80_boundary),
+	.z80_reg(ss_z80_reg),
+	.z80_dir(ss_z80_dir),
+	.z80_dirset(ss_z80_dirset),
+	.z80_rst(ss_z80_rst),
+
+	.ym_cs_n(n2610CS),
+	.ym_wr_n(n2610WR),
+	.ym_addr(SDA[1:0]),
+	.ym_din(SDD_OUT),
+	.ym_ovr(ss_ym_ovr),
+	.ym_a(ss_ym_a),
+	.ym_d(ss_ym_d),
+	.ym_wr(ss_ym_wr),
+
+	.ptick(ss_p),
+	.freeze(ss_freeze),
+
+	.hook_do(ss_hook_do),
+	.hook_di(ss_hook_di),
+	.hook_ld(ss_hook_ld),
+	.wd_clear(ss_wd_clear),
+
+	.mem_act(ss_mem_act),
+	.mem_sel(ss_mem_sel),
+	.mem_addr(ss_mem_addr),
+	.mem_d(ss_mem_d),
+	.mem_we(ss_mem_we),
+	.mem_q(ss_mem_q),
+
+	.img_mounted(img_mounted[0]),
+	.img_size(img_size),
+	.bk_force(ss_bk_force),
+	.bk_busy(bk_state),
+	.sd_act(ss_sd_act),
+	.sd_lba(ss_sd_lba),
+	.sd_blk_cnt(ss_sd_blk_cnt),
+	.sd_rd(ss_sd_rd),
+	.sd_wr(ss_sd_wr),
+	.sd_ack(sd_ack[0]),
+	.sd_buff_addr(sd_buff_addr),
+	.sd_buff_dout(sd_buff_dout),
+	.sd_buff_din(ss_sd_buff_din),
+	.sd_buff_wr(sd_buff_wr)
 );
 
 endmodule
