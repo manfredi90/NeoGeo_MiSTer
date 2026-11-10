@@ -349,7 +349,7 @@ assign busy = (state != S_IDLE);
 reg  [1:0] cur_slot;
 reg [31:0] slot_lba;
 reg [31:0] file_lbas;
-reg [27:0] tmo;
+reg [29:0] tmo;      // timeouts, 48 MHz clocks
 reg [15:0] cnt;
 reg  [5:0] k;
 reg  [1:0] rd_pend;
@@ -453,7 +453,7 @@ always @(posedge clk) begin
 
 		S_BKSAVE: begin
 				bk_force <= 1;
-				tmo      <= 28'd48_000_000;
+				tmo      <= 30'd960_000_000;   // 144 single sector writes, synced one by one: seconds
 				state    <= S_BKWAIT;
 			end
 
@@ -517,13 +517,13 @@ always @(posedge clk) begin
 				parked <= 0;
 				go     <= 0;
 				irq7   <= 1;
-				tmo    <= 28'd12_000_000;
+				tmo    <= 30'd12_000_000;
 				state  <= S_PARK;
 			end
 
 		S_PARK:
 			if (parked) begin
-				tmo <= 28'd24_000_000;
+				tmo <= 30'd24_000_000;
 				if (op_load) state <= S_ZHOLD;
 				else begin
 					// the program goes on from the registers just saved
@@ -551,7 +551,7 @@ always @(posedge clk) begin
 					3: begin
 							k <= k + 1'd1;
 							if (k == 33) begin
-								tmo   <= 28'd24_000_000;
+								tmo   <= 30'd24_000_000;
 								state <= copy_ret;
 							end
 						end
@@ -564,7 +564,7 @@ always @(posedge clk) begin
 
 		S_ZHOLD:
 			if (z80_hold) begin
-				tmo   <= 28'd24_000_000;
+				tmo   <= 30'd24_000_000;
 				state <= op_load ? S_LDYM : S_WAITP;
 			end
 			else if (z80_boundary) z80_hold <= 1;
@@ -618,7 +618,7 @@ always @(posedge clk) begin
 					end
 					else begin
 						ym_ovr <= 0;
-						tmo    <= 28'd24_000_000;
+						tmo    <= 30'd24_000_000;
 						state  <= S_WAITP;
 					end
 
@@ -836,7 +836,7 @@ always @(posedge clk) begin
 		S_SD: begin
 				sd_act    <= 1;
 				sd_stream <= 1;
-				tmo       <= 28'd96_000_000;
+				tmo       <= 30'd480_000_000;  // 16 KB synced write on a slow card
 				state     <= S_SDWAIT;
 			end
 
