@@ -32,7 +32,12 @@ module z80ctrl(
 	output nSDRD0, nSDRD1,
 	output n2610CS,
 	output n2610RD, n2610WR,
-	output nZRAMCS
+	output nZRAMCS,
+
+	// savestates
+	input SS_LD,
+	input [1:0] SS_DI,
+	output [1:0] SS_DO
 );
 
 	reg nNMI_EN;
@@ -83,7 +88,9 @@ module z80ctrl(
 
 	always @(posedge CLK)
 	begin
-		if (!nRESET)
+		if (SS_LD)
+			nNMI_EN <= SS_DI[0];
+		else if (!nRESET)
 			nNMI_EN <= 1'b1;
 		else if (nNMI_SET & !nNMI_SET_d)
 			nNMI_EN <= SDA_L[4];
@@ -92,10 +99,14 @@ module z80ctrl(
 	// NMI trig DFF
 	always @(posedge CLK)
 	begin
-		if (!nNMI_RESET)
+		if (SS_LD)
+			nZ80NMI <= SS_DI[1];
+		else if (!nNMI_RESET)
 			nZ80NMI <= 1'b1;
 		else if (nSDW & !nSDW_d)
 			nZ80NMI <= nNMI_EN;
 	end
+
+	assign SS_DO = {nZ80NMI, nNMI_EN};
 
 endmodule

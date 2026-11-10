@@ -26,7 +26,12 @@ module com(
 	input nPORTOEL,
 	input nPORTOEU,
 	input nPORTWEL,
-	output [15:0] M68K_DIN
+	output [15:0] M68K_DIN,
+
+	// savestates
+	input SS_LD,
+	input SS_DI,
+	output SS_DO
 );
 
 reg nPORTWEL_PREV, TOGGLE_BIT;
@@ -36,7 +41,9 @@ assign M68K_DIN[7:0] = nPORTOEL ? 8'bzzzzzzzz : 8'h00;
 
 always @(posedge CLK_48M)
 begin
-	if (!nRESET)
+	if (SS_LD)
+		TOGGLE_BIT <= SS_DI;
+	else if (!nRESET)
 	begin
 		TOGGLE_BIT <= 1'b0;
 	end
@@ -49,5 +56,7 @@ begin
 			TOGGLE_BIT <= ~TOGGLE_BIT;
 	end
 end
+
+	assign SS_DO = TOGGLE_BIT;
 
 endmodule

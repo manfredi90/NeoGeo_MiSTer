@@ -24,7 +24,12 @@ module zmc(
 	input nSDRD0,
 	input [1:0] SDA_L,
 	input [15:8] SDA_U,
-	output [18:11] MA
+	output [18:11] MA,
+
+	// savestates: {WINDOW_3, WINDOW_2, WINDOW_1, WINDOW_0}
+	input SS_LD,
+	input [25:0] SS_DI,
+	output [25:0] SS_DO
 );
 
 	//      Z80         ROM          Region	Reg
@@ -49,7 +54,10 @@ module zmc(
 
 	always @(posedge CLK)
 	begin
-		if(!nRESET) begin
+		if(SS_LD) begin
+			{WINDOW_3, WINDOW_2, WINDOW_1, WINDOW_0} <= SS_DI;
+		end
+		else if(!nRESET) begin
 			WINDOW_0 <= 'h1E;
 			WINDOW_1 <= 'h0E;
 			WINDOW_2 <= 'h06;
@@ -64,5 +72,7 @@ module zmc(
 			endcase
 		end
 	end
+
+	assign SS_DO = {WINDOW_3, WINDOW_2, WINDOW_1, WINDOW_0};
 
 endmodule

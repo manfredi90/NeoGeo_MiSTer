@@ -48,7 +48,12 @@ module neo_d0(
 	output nZRAMCS,
 	output [2:0] BNK,
 	output [2:0] P1_OUT,
-	output [2:0] P2_OUT
+	output [2:0] P2_OUT,
+
+	// savestates: {Z80 NMI state, REG_OUT, REG_BNK}
+	input SS_LD,
+	input [10:0] SS_DI,
+	output [10:0] SS_DO
 );
 	reg [2:0] REG_BNK;
 	reg [5:0] REG_OUT;
@@ -58,7 +63,10 @@ module neo_d0(
 	
 	// Z80 controller part
 	z80ctrl Z80CTRL(CLK, SDA_L, SDA_H, nSDRD, nSDWR, nMREQ, nIORQ, nSDW, nRESET, nZ80NMI, nSDZ80R, nSDZ80W,
-				nSDZ80CLR, nSDROM, nSDMRD, nSDMWR, SDRD0, SDRD1, n2610CS, n2610RD, n2610WR, nZRAMCS);
+				nSDZ80CLR, nSDROM, nSDMRD, nSDMWR, SDRD0, SDRD1, n2610CS, n2610RD, n2610WR, nZRAMCS,
+				SS_LD, SS_DI[10:9], SS_DO[10:9]);
+
+	assign SS_DO[8:0] = {REG_OUT, REG_BNK};
 	
 	assign {P2_OUT, P1_OUT} = REG_OUT;
 	assign BNK = REG_BNK;
@@ -73,6 +81,7 @@ module neo_d0(
 				REG_OUT <= M68K_DATA[5:0];
 		end
 		if(~nRESETP) {REG_BNK, REG_OUT} <= 0;
+		if(SS_LD) {REG_OUT, REG_BNK} <= SS_DI[8:0];
 	end
 	
 endmodule

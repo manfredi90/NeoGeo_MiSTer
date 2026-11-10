@@ -30,7 +30,17 @@ module neo_pvc
 	input         nPORTWEL, nPORTWEU,
 
 	input         ENABLE,
-	output [23:0] P2_ADDR
+	output [23:0] P2_ADDR,
+
+	// savestates: registers {pcol, us, ub, ug, ur, bank} and a port to the 8KB RAM
+	input         SS_LD,
+	input  [55:0] SS_DI,
+	output [55:0] SS_DO,
+	input         SS_RAM_ACT,
+	input  [11:0] SS_RAM_ADDR,
+	input  [15:0] SS_RAM_D,
+	input         SS_RAM_WE,
+	output [15:0] SS_RAM_Q
 );
 
 assign P2_ADDR = ENABLE ? bank + {M68K_ADDR,1'b0} : 24'h0;
@@ -61,9 +71,10 @@ dpram #(12) RAML(
 	.q_a(RAM_DO[7:0]),
 
 	.clock_b(CLK_48M),
-	.address_b(CLR_ADDR),
-	.data_b(CLR_ADDR[7:0]),
-	.wren_b(~nRESET)
+	.address_b(SS_RAM_ACT ? SS_RAM_ADDR : CLR_ADDR),
+	.data_b(SS_RAM_ACT ? SS_RAM_D[7:0] : CLR_ADDR[7:0]),
+	.wren_b(SS_RAM_ACT ? SS_RAM_WE : ~nRESET),
+	.q_b(SS_RAM_Q[7:0])
 );
 
 dpram #(12) RAMU(
@@ -74,9 +85,10 @@ dpram #(12) RAMU(
 	.q_a(RAM_DO[15:8]),
 
 	.clock_b(CLK_48M),
-	.address_b(CLR_ADDR),
-	.data_b(CLR_ADDR[7:0]),
-	.wren_b(~nRESET)
+	.address_b(SS_RAM_ACT ? SS_RAM_ADDR : CLR_ADDR),
+	.data_b(SS_RAM_ACT ? SS_RAM_D[15:8] : CLR_ADDR[7:0]),
+	.wren_b(SS_RAM_ACT ? SS_RAM_WE : ~nRESET),
+	.q_b(SS_RAM_Q[15:8])
 );
 
 reg nPORTWEU_d;
@@ -88,7 +100,8 @@ end
 
 reg [23:0] bank = 0;
 always @(posedge CLK_48M) begin
-	if(~nRESET) {bank[23:16],bank[7:0]} <= 0;
+	if(SS_LD) {bank[23:16],bank[7:0]} <= {SS_DI[23:16],SS_DI[7:0]};
+	else if(~nRESET) {bank[23:16],bank[7:0]} <= 0;
 	else if (~nPORTWEU & nPORTWEU_d) begin
 		if(PORT_ACC && PORT_NO == 8) bank[7:0]   <= {M68K_DATA[15:9],1'b0};
 		if(PORT_ACC && PORT_NO == 9) bank[23:16] <= {1'b0,M68K_DATA[14:8]};
@@ -96,7 +109,8 @@ always @(posedge CLK_48M) begin
 end
 
 always @(posedge CLK_48M) begin
-	if(~nRESET) bank[15:8] <= 0;
+	if(SS_LD) bank[15:8] <= SS_DI[15:8];
+	else if(~nRESET) bank[15:8] <= 0;
 	else if (~nPORTWEL & nPORTWEL_d) begin
 		if(PORT_ACC && PORT_NO == 9) bank[15:8] <= M68K_DATA[7:0];
 	end
@@ -105,7 +119,8 @@ end
 reg [4:0] ur,ug,ub;
 reg us;
 always @(posedge CLK_48M) begin
-	if(~nPORTWEU && nPORTWEU_d && PORT_ACC && PORT_NO == 0) begin
+	if(SS_LD) {us, ub[0], ug[0], ur} <= {SS_DI[39], SS_DI[34], SS_DI[29], SS_DI[28:24]};
+	else if(~nPORTWEU && nPORTWEU_d && PORT_ACC && PORT_NO == 0) begin
 		ub[0] <= M68K_DATA[12];
 		ug[0] <= M68K_DATA[13];
 		ur    <= {M68K_DATA[11:8], M68K_DATA[14]};
@@ -114,7 +129,8 @@ always @(posedge CLK_48M) begin
 end
 
 always @(posedge CLK_48M) begin
-	if(~nPORTWEL && nPORTWEL_d && PORT_ACC && PORT_NO == 0) begin
+	if(SS_LD) {ub[4:1], ug[4:1]} <= {SS_DI[38:35], SS_DI[33:30]};
+	else if(~nPORTWEL && nPORTWEL_d && PORT_ACC && PORT_NO == 0) begin
 		ub[4:1] <= M68K_DATA[3:0];
 		ug[4:1] <= M68K_DATA[7:4];
 	end
@@ -122,14 +138,16 @@ end
 
 reg [15:0] pcol;
 always @(posedge CLK_48M) begin
-	if (~nPORTWEU && nPORTWEU_d) begin
+	if (SS_LD) {pcol[15], pcol[13], pcol[7:4]} <= {SS_DI[55], SS_DI[53], SS_DI[47:44]};
+	else if (~nPORTWEU && nPORTWEU_d) begin
 		if(PORT_ACC && PORT_NO == 4) {pcol[13],pcol[7:4] } <= {M68K_DATA[8],M68K_DATA[12:9]};
 		if(PORT_ACC && PORT_NO == 5)  pcol[15]             <= M68K_DATA[8];
 	end
 end
 
 always @(posedge CLK_48M) begin
-	if (~nPORTWEL && nPORTWEL_d) begin
+	if (SS_LD) {pcol[14], pcol[12], pcol[11:8], pcol[3:0]} <= {SS_DI[54], SS_DI[52], SS_DI[51:48], SS_DI[43:40]};
+	else if (~nPORTWEL && nPORTWEL_d) begin
 		if(PORT_ACC && PORT_NO == 4) {pcol[12],pcol[3:0] } <= {M68K_DATA[0],M68K_DATA[4:1]};
 		if(PORT_ACC && PORT_NO == 5) {pcol[14],pcol[11:8]} <= {M68K_DATA[0],M68K_DATA[4:1]};
 	end
@@ -152,5 +170,7 @@ always @(*) begin
 		end
 	endcase
 end
+
+assign SS_DO = {pcol, us, ub, ug, ur, bank};
 
 endmodule

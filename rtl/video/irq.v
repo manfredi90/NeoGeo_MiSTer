@@ -27,7 +27,12 @@ module irq_sync(
 	input VBL_IRQ,
 	input VBL_IRQ_EN,
 	input CLK_EN,
-	output IPL0, IPL1
+	output IPL0, IPL1,
+
+	// savestates: {B32_Q, C52_Q, B52_Q, B56_Q}
+	input SS_LD,
+	input [6:0] SS_DI,
+	output [6:0] SS_DO
 );
 
 	wire [2:0] ACK;
@@ -43,9 +48,9 @@ module irq_sync(
 	//FD3 B56(RESET_IRQ, 1'b0, ACK[0], B56_Q, B56_nQ);
 	//FD3 B52(TIMER_IRQ, 1'b0, ACK[1], B52_Q, B52_nQ);
 	//FD3 C52(VBL_IRQ, 1'b0, ACK[2], C52_Q);
-	register B56(CLK, ~ACK[0], 1'b0, RESET_IRQ, 1'b0, B56_Q);
-	register B52(CLK, ~ACK[1], 1'b0, TIMER_IRQ, ~TIMER_IRQ_EN, B52_Q);
-	register C52(CLK, ~ACK[2], 1'b0, VBL_IRQ, ~VBL_IRQ_EN, C52_Q);
+	register_ss B56(CLK, ~ACK[0], 1'b0, RESET_IRQ, 1'b0, B56_Q, SS_LD, SS_DI[0]);
+	register_ss B52(CLK, ~ACK[1], 1'b0, TIMER_IRQ, ~TIMER_IRQ_EN, B52_Q, SS_LD, SS_DI[1]);
+	register_ss C52(CLK, ~ACK[2], 1'b0, VBL_IRQ, ~VBL_IRQ_EN, C52_Q, SS_LD, SS_DI[2]);
 	
 	// B49
 	wire B49_OUT = B52_Q | B56_nQ;
@@ -55,7 +60,7 @@ module irq_sync(
 	
 	//FDSCell B32(CLK, {1'b0, B50A_OUT, B49_OUT, B56_Q}, B32_Q);
 	reg [3:0] B32_Q;
-	always @(posedge CLK) if (CLK_EN) B32_Q <= {1'b0, B50A_OUT, B49_OUT, B56_Q};
+	always @(posedge CLK) if (SS_LD) B32_Q <= SS_DI[6:3]; else if (CLK_EN) B32_Q <= {1'b0, B50A_OUT, B49_OUT, B56_Q};
 	
 	assign IPL0 = ~|{~B32_Q[0], B32_Q[2]};
 	assign IPL1 = ~|{~B32_Q[1], ~B32_Q[0]};
@@ -66,5 +71,7 @@ module irq_sync(
 	// x10: 101 Timer IRQ
 	// 100: 110 VBL IRQ
 	// 000: 111 No interrupt
+
+	assign SS_DO = {B32_Q, C52_Q, B52_Q, B56_Q};
 
 endmodule

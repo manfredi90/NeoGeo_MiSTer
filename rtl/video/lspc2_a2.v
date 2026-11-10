@@ -82,7 +82,13 @@ module lspc2_a2_sync(
 	output [15:0] VRAM_ADDR,        // CPU access address
 	output  [1:0] VRAM_CYCLE,
 	output        SVRAM_WR,         // Full cycle WR signal
-	output [15:0] LO_ROM_ADDR
+	output [15:0] LO_ROM_ADDR,
+
+	// savestates
+	input          SS_LD,
+	input  [187:0] SS_DI,
+	output [187:0] SS_DO,
+	output         SS_P          // fixed freeze point: raster line $100 (vertical blank)
 );
 
 	wire [8:0] PIXELC;
@@ -216,7 +222,7 @@ module lspc2_a2_sync(
 	//wire C22A_OUT = ~&{WR_VRAM_RW, WR_VRAM_ADDR};
 	wire VRAM_ADDR_UPD_TYPE;
 	//FDM B18(C22A_OUT, M68K_ADDR[1], VRAM_ADDR_UPD_TYPE);
-	register B18(CLK, 1'b0, 1'b0, ~(WR_VRAM_RW & WR_VRAM_ADDR), M68K_ADDR[1], VRAM_ADDR_UPD_TYPE);
+	register_ss B18(CLK, 1'b0, 1'b0, ~(WR_VRAM_RW & WR_VRAM_ADDR), M68K_ADDR[1], VRAM_ADDR_UPD_TYPE, SS_LD, SS_DI[155]);
 	
 	// VRAM_ADDR with REG_VRAMMOD applied
 	// G18 G81 F91 F127
@@ -234,12 +240,12 @@ module lspc2_a2_sync(
 	// TESTING
 	always @(posedge CLK) D112B_OUT_DELAY <= D112B_OUT;
 	//FDS16bit F14(D112B_OUT_DELAY, VRAM_ADDR_MUX, VRAM_ADDR);
-	register #(16) F14(CLK, 1'b0, 1'b0, D112B_OUT, VRAM_ADDR_MUX, VRAM_ADDR);
+	register_ss #(16) F14(CLK, 1'b0, 1'b0, D112B_OUT, VRAM_ADDR_MUX, VRAM_ADDR, SS_LD, SS_DI[171:156]);
 	
 	// ...Second stage
 	// F165 D178 D141 E196
 	//FDS16bit E196(O108B_OUT, REG_VRAMRW, VRAM_WRITE);
-	register #(16) E196(CLK, 1'b0, 1'b0, ~(nCPU_WR_HIGH & nCPU_WR_LOW), REG_VRAMRW, VRAM_WRITE);
+	register_ss #(16) E196(CLK, 1'b0, 1'b0, ~(nCPU_WR_HIGH & nCPU_WR_LOW), REG_VRAMRW, VRAM_WRITE, SS_LD, SS_DI[187:172]);
 	
 	// Pulse for updating internal VRAM address
 	// nCPU_WR_HIGH and nCPU_WR_LOW are "write done" pulses for both VRAM zones
@@ -700,16 +706,19 @@ module lspc2_a2_sync(
 	lspc_regs_sync REGS_SYNC(CLK, RESET, nRESETP, M68K_ADDR, M68K_DATA, LSPOE, LSPWE, VMODE, RASTERC, AA_COUNT, VRAM_LOW_READ,
 					VRAM_HIGH_READ, WR_VRAM_ADDR, WR_VRAM_RW, WR_TIMER_HIGH, WR_TIMER_LOW, WR_IRQ_ACK, REG_VRAMADDR,
 					REG_VRAMMOD, REG_VRAMRW, REG_LSPCMODE, CPU_DATA_OUT, AA_SPEED,	TIMER_MODE,	TIMER_IRQ_EN,
-					AA_DISABLE, TIMER_STOP, nVRAM_WRITE_REQ, D112B_OUT_DELAY);
+					AA_DISABLE, TIMER_STOP, nVRAM_WRITE_REQ, D112B_OUT_DELAY,
+					SS_LD, SS_DI[61:0], SS_DO[61:0]);
 	
 	wire LSPC_6M, D46A_OUT;
 	lspc_timer_sync TIMER_SYNC(CLK, LSPC_6M, LSPC_EN_6M_N, LSPC_EN_6M_P, nRESETP, M68K_DATA, WR_TIMER_HIGH, WR_TIMER_LOW, VMODE, TIMER_MODE, TIMER_STOP,
-						RASTERC, TIMER_IRQ_EN, R74_nQ_EN, BNKB, D46A_OUT);
+						RASTERC, TIMER_IRQ_EN, R74_nQ_EN, BNKB, D46A_OUT,
+						SS_LD, SS_DI[135:62], SS_DO[135:62]);
 	
 	resetp_sync RSTP_SYNC(CLK, CLK_EN_24M_N, RESET, nRESETP);
 	
 	wire BNK;
-	irq_sync IRQ_SYNC(CLK, WR_IRQ_ACK, M68K_DATA[2:0], RESET, D46A_OUT, CD_TIMER_IRQ_EN, BNK, CD_VBLANK_IRQ_EN, LSPC_EN_6M_P, IPL0, IPL1);
+	irq_sync IRQ_SYNC(CLK, WR_IRQ_ACK, M68K_DATA[2:0], RESET, D46A_OUT, CD_TIMER_IRQ_EN, BNK, CD_VBLANK_IRQ_EN, LSPC_EN_6M_P, IPL0, IPL1,
+						SS_LD, SS_DI[142:136], SS_DO[142:136]);
 	
 	wire FLIP, P50_CO;
 	videosync_sync VS_SYNC(CLK, CLK_EN_24M_P, CLK_EN_24M_N, LSPC_3M, LSPC_1_5M, LSPC_EN_1_5M_P, LSPC_EN_1_5M_N, nRESETP, VMODE, PIXELC, RASTERC, HSYNC, VSYNC, BNK,
@@ -741,7 +750,15 @@ module lspc2_a2_sync(
 							CLK_ACTIVE_RD_EN, ACTIVE_RD_PRE8, SPR_Y, YSHRINK, SPR_SIZE0, SPR_SIZE5, O159_QB,
 							FVRAM_ADDR, FVRAM_DATA_IN, FVRAM_DATA_OUT, CWE);
 	
-	autoanim_sync AA_SYNC(CLK, RASTERC[8], nRESETP, AA_SPEED, AA_COUNT);
+	autoanim_sync AA_SYNC(CLK, RASTERC[8], nRESETP, AA_SPEED, AA_COUNT, SS_LD, SS_DI[154:143], SS_DO[154:143]);
+
+	assign SS_DO[155] = VRAM_ADDR_UPD_TYPE;
+	assign SS_DO[171:156] = VRAM_ADDR;
+	assign SS_DO[187:172] = VRAM_WRITE;
+
+	// One clock per frame, always at the same point of the video timing (all the clock
+	// dividers have a period that divides the line length, so they are in step too).
+	assign SS_P = (RASTERC == 9'h100) && (PIXELC == 9'h180) && LSPC_EN_6M_P;
 	
 	wire HSHRINK_OUT_A, HSHRINK_OUT_B;
 	hshrink_sync HSH_SYNC(CLK, HSHRINK, CK_HSHRINK_EN, LD_HSHRINK_REG, HSHRINK_OUT_A, HSHRINK_OUT_B);

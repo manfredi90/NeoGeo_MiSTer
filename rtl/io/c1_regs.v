@@ -26,7 +26,12 @@ module c1_regs(
 	output [7:0] SDD_RD,
 	input [7:0] SDD_WR,
 	input nSDZ80R, nSDZ80W, nSDZ80CLR,
-	output nSDW
+	output nSDW,
+
+	// savestates: {SDD_LATCH_REP, SDD_LATCH_CMD}
+	input SS_LD,
+	input [15:0] SS_DI,
+	output [15:0] SS_DO
 );
 
 	reg [7:0] SDD_LATCH_CMD;
@@ -39,7 +44,9 @@ module c1_regs(
 	always @(posedge CLK) begin
 		reg nSDZ80W_d;
 		nSDZ80W_d <= nSDZ80W;
-		if (nSDZ80W & ~nSDZ80W_d)
+		if (SS_LD)
+			SDD_LATCH_REP <= SS_DI[15:8];
+		else if (nSDZ80W & ~nSDZ80W_d)
 			SDD_LATCH_REP <= SDD_WR;
 	end
 	
@@ -57,7 +64,9 @@ module c1_regs(
 		nICOM_ZONE_d <= nICOM_ZONE;
 		nSDZ80CLR_d <= nSDZ80CLR;
 
-		if (!nSDZ80CLR & nSDZ80CLR_d)
+		if (SS_LD)
+			SDD_LATCH_CMD <= SS_DI[7:0];
+		else if (!nSDZ80CLR & nSDZ80CLR_d)
 		begin
 			SDD_LATCH_CMD <= 8'b00000000;
 		end
@@ -68,4 +77,6 @@ module c1_regs(
 		end
 	end
 	
+	assign SS_DO = {SDD_LATCH_REP, SDD_LATCH_CMD};
+
 endmodule

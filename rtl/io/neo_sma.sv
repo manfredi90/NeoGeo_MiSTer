@@ -30,7 +30,12 @@ module neo_sma
 	input         nPORTWEL, nPORTWEU,
 
 	input   [2:0] TYPE,
-	output [23:0] P2_ADDR
+	output [23:0] P2_ADDR,
+
+	// savestates: {rst, rng, bank}
+	input         SS_LD,
+	input  [40:0] SS_DI,
+	output [40:0] SS_DO
 );
 
 assign P2_ADDR = ENABLE ? bank + {M68K_ADDR,1'b0} : 24'h0;
@@ -200,7 +205,8 @@ end
 
 reg [23:0] bank = 0;
 always @(posedge CLK_48M) begin
-	if(~nRESET) bank <= 0;
+	if(SS_LD) bank <= SS_DI[23:0];
+	else if(~nRESET) bank <= 0;
 	else if(~nPORTWE & nPORTWE_d & BANK_SEL) begin
 		case(TYPE)
 			3: bank <= kof99_map[kof99_idx];
@@ -213,14 +219,17 @@ always @(posedge CLK_48M) begin
 end
 
 reg [15:0] rng = 0;
+reg rst = 0;
 always @(posedge CLK_48M) begin
-	reg rst = 0;
-	if(~nRESET) rst = 1;
+	if(SS_LD) {rst, rng} <= SS_DI[40:24];
+	else if(~nRESET) rst <= 1;
 	else if (~nPORTOE & nPORTOE_d) begin
 		if(rst) rng <= 'h2345;
 		else rng <= {rng[14:0], rng[2] ^ rng[3] ^ rng[5] ^ rng[6] ^ rng[7] ^ rng[11] ^ rng[12] ^ rng[15]};
 		rst <= 0;
 	end
 end
+
+assign SS_DO = {rst, rng, bank};
 
 endmodule

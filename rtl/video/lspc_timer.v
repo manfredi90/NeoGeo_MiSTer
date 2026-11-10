@@ -37,7 +37,12 @@ module lspc_timer_sync(
 	input TIMER_IRQ_EN,
 	input R74_nQ_EN,
 	input BNKB,
-	output D46A_OUT
+	output D46A_OUT,
+
+	// savestates, see SS_DO at the end
+	input SS_LD,
+	input [73:0] SS_DI,
+	output [73:0] SS_DO
 );
 	
 	wire [15:0] REG_TIMERHIGH;
@@ -48,7 +53,7 @@ module lspc_timer_sync(
 	// Lower 16 bits
 	// K104 K68 K87 K121
 	//FDS16bit K104(WR_TIMER_LOW, M68K_DATA, REG_TIMERLOW);
-	register #(16) K104(CLK, 1'b0, 1'b0, WR_TIMER_LOW, M68K_DATA, REG_TIMERLOW);
+	register_ss #(16) K104(CLK, 1'b0, 1'b0, WR_TIMER_LOW, M68K_DATA, REG_TIMERLOW, SS_LD, SS_DI[15:0]);
 
 	/*
 	wire nTIMER_EN, L127_CO, M125_CO;
@@ -65,7 +70,8 @@ module lspc_timer_sync(
 	*/
 	reg [15:0] TIMER_LOW;
 	always @(posedge CLK)
-		if (LSPC_EN_6M_N) begin
+		if (SS_LD) TIMER_LOW <= SS_DI[47:32];
+		else if (LSPC_EN_6M_N) begin
 			if (!nRESETP)
 				TIMER_LOW <= 0;
 			else if (!nRELOAD)
@@ -79,7 +85,7 @@ module lspc_timer_sync(
 	// Higher 16 bits
 	// K31 G50 K48 K58
 	//FDS16bit K31(WR_TIMER_HIGH, M68K_DATA, REG_TIMERHIGH);
-	register #(16) K31(CLK, 1'b0, 1'b0, WR_TIMER_HIGH, M68K_DATA, REG_TIMERHIGH);
+	register_ss #(16) K31(CLK, 1'b0, 1'b0, WR_TIMER_HIGH, M68K_DATA, REG_TIMERHIGH, SS_LD, SS_DI[31:16]);
 	/*
 	wire L106A_OUT = L127_CO;
 	wire L76_OUT = L81_CO ^ 1'b0;	// Used for test mode
@@ -96,7 +102,8 @@ module lspc_timer_sync(
 	*/
 	reg [15:0] TIMER_HIGH;
 	always @(posedge CLK)
-		if (LSPC_EN_6M_N) begin
+		if (SS_LD) TIMER_HIGH <= SS_DI[63:48];
+		else if (LSPC_EN_6M_N) begin
 			if (!nRESETP)
 				TIMER_HIGH <= 0;
 			else if (!nRELOAD)
@@ -110,11 +117,12 @@ module lspc_timer_sync(
 	wire E10_Q;
 	reg E20_Q, E20_nQ, E32_nQ;
 	//FDPCell E10(WR_TIMER_LOW, 1'b0, E14A_OUT, 1'b1, E10_Q);
-	register E10(CLK, !E14A_OUT, 1'b0, WR_TIMER_LOW, 1'b0, E10_Q);
+	register_ss E10(CLK, !E14A_OUT, 1'b0, WR_TIMER_LOW, 1'b0, E10_Q, SS_LD, SS_DI[65]);
 	//FDPCell E20(~LSPC_6M, E10_Q, 1'b1, nRESETP, E20_Q, E20_nQ);
 	//FDPCell E32(~LSPC_6M, E20_Q, 1'b1, nRESETP, , E32_nQ);
 	always @(posedge CLK) 
-		if (LSPC_EN_6M_N) begin
+		if (SS_LD) {E32_nQ, E20_nQ, E20_Q} <= SS_DI[68:66];
+		else if (LSPC_EN_6M_N) begin
 			{E20_Q, E20_nQ} <= {E10_Q, ~E10_Q};
 			E32_nQ <= ~E20_Q;
 		end
@@ -127,6 +135,8 @@ module lspc_timer_sync(
 	always @(posedge CLK, negedge nRESETP)
 		if (!nRESETP)
 			K18_Q <= 0;
+		else if (SS_LD)
+			K18_Q <= SS_DI[70];
 		else if (R74_nQ_EN)
 			K18_Q <= BNKB;
 	//FDPCell E16(LSPC_6M, K18_Q, nRESETP, 1'b1, E16_Q);
@@ -137,6 +147,8 @@ module lspc_timer_sync(
 			//K18_Q <= 0;
 			E16_Q <= 0;
 			E36_Q <= 0;
+		end else if (SS_LD) begin
+			{E46_nQ, E36_Q, E16_Q} <= SS_DI[73:71];
 		end else if (LSPC_EN_6M_P)
 			E16_Q <= K18_Q;
 		else if (LSPC_EN_6M_N) begin
@@ -150,7 +162,7 @@ module lspc_timer_sync(
 	wire K22A_OUT = L127_CO & TIMER_CO;
 	reg E43_nQ;
 	//FDM E43(~LSPC_6M, K22A_OUT, , E43_nQ);
-	always @(posedge CLK) if (LSPC_EN_6M_N) E43_nQ <= ~K22A_OUT;
+	always @(posedge CLK) if (SS_LD) E43_nQ <= SS_DI[69]; else if (LSPC_EN_6M_N) E43_nQ <= ~K22A_OUT;
 
 	wire RELOAD_MODE2 = TIMER_MODE[2] & K22A_OUT;
 	assign D46A_OUT = ~|{~TIMER_IRQ_EN, E43_nQ};
@@ -162,6 +174,9 @@ module lspc_timer_sync(
 	wire I234_OUT = |{RASTERC[8], ~VMODE, ~TIMER_STOP};
 	wire J238B_OUT = ~|{J257A_OUT, I234_OUT};
 	//FDM J69(LSPC_6M, J238B_OUT, , nTIMER_EN);
-	always @(posedge CLK) if (LSPC_EN_6M_P) nTIMER_EN <= ~J238B_OUT;
+	always @(posedge CLK) if (SS_LD) nTIMER_EN <= SS_DI[64]; else if (LSPC_EN_6M_P) nTIMER_EN <= ~J238B_OUT;
+
+	assign SS_DO = {E46_nQ, E36_Q, E16_Q, K18_Q, E43_nQ, E32_nQ, E20_nQ, E20_Q, E10_Q, nTIMER_EN,
+	                TIMER_HIGH, TIMER_LOW, REG_TIMERHIGH, REG_TIMERLOW};
 
 endmodule

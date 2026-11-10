@@ -19,7 +19,12 @@ module syslatch(
 	input nBITW1,
 	input nRESET,
 	output SHADOW, nVEC, nCARDWEN, CARDWENB, nREGEN, nSYSTEM, nSRAMWEN, PALBNK,
-	input CLK, CLK_EN_68K_P
+	input CLK, CLK_EN_68K_P,
+
+	// savestates
+	input SS_LD,
+	input [7:0] SS_DI,
+	output [7:0] SS_DO
 );
 
 	reg [7:0] SLATCH;
@@ -60,8 +65,11 @@ module syslatch(
 		end
 	end*/
 	
+	assign SS_DO = SLATCH;
+
 	always @(posedge CLK)	// M68K_ADDR[4:1] or nBITW1 or nRESET
-	if (CLK_EN_68K_P) begin
+	if (SS_LD) SLATCH <= SS_DI;
+	else if (CLK_EN_68K_P) begin
 		if (!nRESET)
 		begin
 			if (nBITW1)

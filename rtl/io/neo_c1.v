@@ -51,7 +51,12 @@ module neo_c1(
 	output nDTACK,
 	output nBITW0, nBITW1, nDIPRD0, nDIPRD1,
 	output nPAL_ZONE,
-	input [1:0] SYSTEM_TYPE
+	input [1:0] SYSTEM_TYPE,
+
+	// savestates: sound command/reply latches
+	input SS_LD,
+	input [15:0] SS_DI,
+	output [15:0] SS_DO
 );
 
 	wire nIO_ZONE;			// Internal
@@ -67,7 +72,7 @@ module neo_c1(
 	wire nSROM_ZONE;		// Internal
 	wire nSRAM_ZONE;		// Internal (external for PCB)
 	
-	c1_regs C1REGS(CLK, nICOM_ZONE, RW, M68K_DATA, SDD_RD, SDD_WR, nSDZ80R, nSDZ80W, nSDZ80CLR, nSDW);
+	c1_regs C1REGS(CLK, nICOM_ZONE, RW, M68K_DATA, SDD_RD, SDD_WR, nSDZ80R, nSDZ80W, nSDZ80CLR, nSDW, SS_LD, SS_DI, SS_DO);
 	
 	c1_wait C1WAIT(CLK, CLK_EN_68K_P, nAS, SYSTEM_TYPE[1], nROM_ZONE, nWRAM_ZONE, nPORT_ZONE, nCARD_ZONE, nSROM_ZONE,
 					nROMWAIT, nPWAIT0, nPWAIT1, PDTACK, nDTACK);

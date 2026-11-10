@@ -22,7 +22,12 @@ module autoanim_sync(
 	input RASTER8,
 	input RESETP,
 	input [7:0] AA_SPEED,
-	output [2:0] AA_COUNT
+	output [2:0] AA_COUNT,
+
+	// savestates: {AA_CNT_FULL, TIMER_CNT}
+	input SS_LD,
+	input [11:0] SS_DI,
+	output [11:0] SS_DO
 );
 
 	wire [3:0] D151_Q;
@@ -44,10 +49,13 @@ module autoanim_sync(
 
 	reg [7:0] TIMER_CNT;
 	reg [3:0] AA_CNT_FULL;
+	assign SS_DO = {AA_CNT_FULL, TIMER_CNT};
+
 	always @(posedge CLK) begin
 		reg RASTER8_d;
 		RASTER8_d <= RASTER8;
-		if (~RASTER8_d & RASTER8) begin
+		if (SS_LD) {AA_CNT_FULL, TIMER_CNT} <= SS_DI;
+		else if (~RASTER8_d & RASTER8) begin
 			if (&TIMER_CNT)
 				TIMER_CNT <= ~AA_SPEED;
 			else
