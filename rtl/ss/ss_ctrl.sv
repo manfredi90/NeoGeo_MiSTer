@@ -130,8 +130,6 @@ localparam [7:0] I_SAVED = 18, I_LOADED = 19, I_EMPTY = 20, I_OTHER = 21, I_NOFI
 //----------------------------------------------------------------------------
 // Meta RAM (256 x 16, two byte lanes). Port A: 68000. Port B: controller/SD.
 
-reg  [7:0] meta_lo[256];
-reg  [7:0] meta_hi[256];
 
 wire       win      = ~cpu_as_n && cpu_addr[23:12] == 12'hFF0 && cpu_fc != 3'b111;   // $FF0000-$FF0FFF, not the interrupt acknowledge
 wire       win_rom  = cpu_addr[15:8] == 8'h00;
@@ -140,17 +138,7 @@ wire       win_ctl  = cpu_addr[15:8] == 8'h08;
 
 wire       ma_we_lo = win & win_meta & ~cpu_rw & ~cpu_lds_n;
 wire       ma_we_hi = win & win_meta & ~cpu_rw & ~cpu_uds_n;
-reg  [7:0] ma_q_lo, ma_q_hi;
-
-always @(posedge clk) begin
-	if (ma_we_lo) meta_lo[cpu_addr[8:1]] <= cpu_dout[7:0];
-	ma_q_lo <= meta_lo[cpu_addr[8:1]];
-end
-
-always @(posedge clk) begin
-	if (ma_we_hi) meta_hi[cpu_addr[8:1]] <= cpu_dout[15:8];
-	ma_q_hi <= meta_hi[cpu_addr[8:1]];
-end
+wire [7:0] ma_q_lo, ma_q_hi;
 
 reg  [7:0] mb_addr_f;
 reg        mb_we_f;
@@ -158,17 +146,20 @@ reg [15:0] mb_d_f;
 wire [7:0] mb_addr;
 wire       mb_we;
 wire[15:0] mb_d;
-reg [15:0] mb_q;
+wire[15:0] mb_q;
 
-always @(posedge clk) begin
-	if (mb_we) meta_lo[mb_addr] <= mb_d[7:0];
-	mb_q[7:0] <= meta_lo[mb_addr];
-end
+// block RAMs (rtl/mem/dpram.v)
+dpram #(8,8) meta_l
+(
+	.clock_a(clk), .address_a(cpu_addr[8:1]), .data_a(cpu_dout[7:0]), .wren_a(ma_we_lo), .q_a(ma_q_lo),
+	.clock_b(clk), .address_b(mb_addr), .data_b(mb_d[7:0]), .wren_b(mb_we), .q_b(mb_q[7:0])
+);
 
-always @(posedge clk) begin
-	if (mb_we) meta_hi[mb_addr] <= mb_d[15:8];
-	mb_q[15:8] <= meta_hi[mb_addr];
-end
+dpram #(8,8) meta_h
+(
+	.clock_a(clk), .address_a(cpu_addr[8:1]), .data_a(cpu_dout[15:8]), .wren_a(ma_we_hi), .q_a(ma_q_hi),
+	.clock_b(clk), .address_b(mb_addr), .data_b(mb_d[15:8]), .wren_b(mb_we), .q_b(mb_q[15:8])
+);
 
 //----------------------------------------------------------------------------
 // 68000 hidden ROM, control port and vector
@@ -197,22 +188,20 @@ end
 // YM2610 register copy (512 x 9: valid + value). Port A: writes from the Z80.
 // The key on register ($28) is kept per channel at port A $F0-$F7.
 
-reg  [8:0] shd[512];
 reg  [8:0] sha_addr;
 reg  [8:0] sha_d;
 reg        sha_we;
 
-always @(posedge clk) if (sha_we) shd[sha_addr] <= sha_d;
-
 wire [8:0] shb_addr;
 wire       shb_we;
 wire [8:0] shb_d;
-reg  [8:0] shb_q;
+wire [8:0] shb_q;
 
-always @(posedge clk) begin
-	if (shb_we) shd[shb_addr] <= shb_d;
-	shb_q <= shd[shb_addr];
-end
+dpram #(9,9) shadow
+(
+	.clock_a(clk), .address_a(sha_addr), .data_a(sha_d), .wren_a(sha_we), .q_a(),
+	.clock_b(clk), .address_b(shb_addr), .data_b(shb_d), .wren_b(shb_we), .q_b(shb_q)
+);
 
 reg  [7:0] ym_sel;
 reg        ym_part;

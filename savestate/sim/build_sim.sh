@@ -20,6 +20,6 @@ cp ../../rtl/cpu/FX68K/fx68kAlu.sv ../../rtl/cpu/FX68K/uaddrPla.sv fx/
 cp ../../rtl/cpu/FX68K/microrom.mem ../../rtl/cpu/FX68K/nanorom.mem .
 verilator --cc --exe --build -O2 -Wno-fatal -Wno-WIDTH -Wno-CASEINCOMPLETE -Wno-UNOPTFLAT -Wno-LATCH \
 	-Wno-MULTIDRIVEN -Wno-PINMISSING -Wno-COMBDLY -Wno-ALWCOMBORDER --top-module tb \
-	-I../../rtl/ss -Ifx tb.sv ../../rtl/ss/ss_ctrl.sv ../../rtl/cpu/cpu_68k.v \
+	-I../../rtl/ss -Ifx tb.sv dpram_sim.v ../../rtl/ss/ss_ctrl.sv ../../rtl/cpu/cpu_68k.v \
 	fx/fx68k.sv fx/fx68kAlu.sv fx/uaddrPla.sv sim_main.cpp -o simv -j 2
 echo "run: ./obj_dir/simv"
