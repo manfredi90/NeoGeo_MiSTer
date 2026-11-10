@@ -29,7 +29,13 @@ module cpu_z80(
 	output reg nRD, nWR,
 	input nBUSRQ,
 	output nBUSAK,
-	input nINT, nNMI, nWAIT
+	input nINT, nNMI, nWAIT,
+
+	// savestates
+	output [213:0] SS_REG,      // {NMI pending, HALT, T80 REG}
+	input  [213:0] SS_DIR,
+	input          SS_DIRSET,
+	output         SS_BOUNDARY  // T1 of the opcode fetch of a new instruction
 );
 
 	wire RFSH_n, MREQ_n;
@@ -52,7 +58,13 @@ module cpu_z80(
 		.BUSAK_n(nBUSAK),
 		.A(SDA),
 		.DI(SDD_IN),
-		.DO(SDD_OUT)
+		.DO(SDD_OUT),
+		.REG(SS_REG[211:0]),
+		.REG_EXT(SS_REG[213:212]),
+		.DIRSet(SS_DIRSET),
+		.DIR(SS_DIR[211:0]),
+		.DIR_EXT(SS_DIR[213:212]),
+		.BOUNDARY(SS_BOUNDARY)
 	);
 
 endmodule

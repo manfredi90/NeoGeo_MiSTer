@@ -124,7 +124,11 @@ entity T80 is
 		REG        : out std_logic_vector(211 downto 0); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 
 		DIRSet     : in  std_logic := '0';
-		DIR        : in  std_logic_vector(211 downto 0) := (others => '0') -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
+		DIR        : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
+		-- savestates
+		REG_EXT    : out std_logic_vector(1 downto 0);                       -- NMI pending, HALT
+		DIR_EXT    : in  std_logic_vector(1 downto 0) := (others => '0');
+		BOUNDARY   : out std_logic                                           -- T1 of the opcode fetch of a new instruction
 	);
 end T80;
 
@@ -173,6 +177,7 @@ architecture rtl of T80 is
 	signal BusAck               : std_logic := '0';
 	signal ClkEn                : std_logic;
 	signal NMI_s                : std_logic;
+	signal NewInstr             : std_logic;
 	signal IStatus              : std_logic_vector(1 downto 0);
 
 	signal DI_Reg               : std_logic_vector(7 downto 0);
@@ -433,6 +438,7 @@ begin
 		elsif rising_edge(CLK_n) then
 
 			if DIRSet = '1' then
+				Alternate <= '0';
 				ACC <= DIR( 7 downto  0);
 				F   <= DIR(15 downto  8);
 				Ap  <= DIR(23 downto 16);
@@ -1203,6 +1209,11 @@ begin
 	end process;
 
 	MC <= std_logic_vector(MCycle);
+	REG_EXT <= NMI_s & Halt_FF;
+	-- Nothing of the previous instruction may still be pending: its register/flag write-back
+	-- and the block instruction flags are applied on the tick that ends T1.
+	BOUNDARY <= '1' when MCycle = "001" and TState = "001" and NewInstr = '1' and IntCycle = '0' and NMICycle = '0' and
+	                     Save_ALU_r = '0' and Read_To_Reg_r(4) = '0' and ALU_Op_r /= "1001" and I_BT = '0' and I_BC = '0' else '0';
 	TS <= std_logic_vector(TState);
 	DI_Reg <= DI;
 	HALT_n <= not Halt_FF;
@@ -1237,10 +1248,14 @@ begin
 			M1_n <= '1';
 			--BusReq_s <= '0';
 			NMI_s <= '0';
+			NewInstr <= '1';
 		elsif rising_edge(CLK_n) then
 			if DIRSet = '1' then
 				IntE_FF2 <= DIR(211);
 				IntE_FF1 <= DIR(210);
+				Halt_FF <= DIR_EXT(0);
+				NMI_s <= DIR_EXT(1);
+				NewInstr <= '1';
 			else
 				if NMI_n = '0' and OldNMI_n = '1' then
 					NMI_s <= '1';
@@ -1312,6 +1327,11 @@ begin
 									MCycle <= "001";
 									IntCycle <= '0';
 									NMICycle <= '0';
+									if Prefix = "00" then
+										NewInstr <= '1';
+									else
+										NewInstr <= '0';
+									end if;
 									if NMI_s = '1' and Prefix = "00" then
 										NMI_s    <= '0';
 										NMICycle <= '1';
