@@ -62,7 +62,7 @@ static void run(uint64_t n) {
 	for (uint64_t i = 0; i < n; i++) { tick(); sd_service(); }
 }
 
-static int dbg = 1;
+static int dbg = 0;
 static void request(bool load, int slot) {
 	t->slot = slot;
 	if (load) t->load = 1; else t->save = 1;

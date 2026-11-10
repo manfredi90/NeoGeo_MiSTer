@@ -435,7 +435,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(2)) hps_io
 	.ioctl_wait((ddr_loading & ddram_wait) | memcp_wait),
 
 	.sd_lba(sd_lba),
-	.sd_blk_cnt('{6'd0, ss_sd_blk_cnt}),
+	.sd_blk_cnt('{ss_sd_blk_cnt, 6'd0}),	// VD 0, VD 1
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
