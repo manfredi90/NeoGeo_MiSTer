@@ -1,0 +1,113 @@
+# Compile the core with Quartus 17.0 Lite and keep the .rbf plus the fitter/timing
+# summaries as downloadable artifacts.
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write   # stage results as commit statuses, readable while the build runs
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space for the Quartus image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Status helper
+        run: |
+          cat > "$RUNNER_TEMP/status.sh" <<'EOS'
+          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/$1" \
+            -f description="$(echo "$2" | cut -c1-139)" > /dev/null || true; }
+          EOS
+          echo "BASH_ENV=$RUNNER_TEMP/status.sh" >> "$GITHUB_ENV"
+          echo "GH_TOKEN=${{ github.token }}" >> "$GITHUB_ENV"
+
+      - name: Start Quartus
+        run: |
+          docker run -d --name quartus -v "$PWD":/build -w /build theypsilon/quartus-lite-c5:17.0.2.docker0 \
+            sh -c '/opt/intelFPGA_lite/quartus/bin/quartus_sh --flow compile NeoGeo.qpf > build.log 2>&1; echo $? > build.rc'
+
+      - name: Synthesis
+        shell: bash
+        run: |
+          until [ -f output_files/NeoGeo.map.summary ] || [ -f build.rc ]; do sleep 20; done
+          sleep 5
+          grep -E "Total logic elements|Total registers|Total block memory bits|Total RAM Blocks" \
+            output_files/NeoGeo.map.summary 2>/dev/null | sed 's/^/::notice::synthesis: /' || true
+          status synthesis "$(grep -E "Logic utilization|Total registers" output_files/NeoGeo.map.summary 2>/dev/null | sed 's/^ *//; s/ *: */ /' | tr '\n' ';')"
+          [ ! -f build.rc ] || [ "$(cat build.rc)" = 0 ] || [ -f output_files/NeoGeo.fit.summary ] || exit 1
+
+      - name: Fitter
+        shell: bash
+        run: |
+          until [ -f output_files/NeoGeo.fit.summary ] || [ -f build.rc ]; do sleep 30; done
+          sleep 5
+          grep -E "Logic utilization|Total registers|Total block memory bits|Total RAM Blocks|Total DSP" \
+            output_files/NeoGeo.fit.summary 2>/dev/null | sed 's/^/::notice::fit: /' || true
+          status fitter "$(grep -E "Logic utilization|Total registers|Total RAM Blocks" output_files/NeoGeo.fit.summary 2>/dev/null | sed 's/^ *//; s/ *: */ /' | tr '\n' ';')"
+
+      - name: Timing and result
+        shell: bash
+        run: |
+          until [ -f build.rc ]; do sleep 30; done
+          cat output_files/NeoGeo.sta.summary 2>/dev/null || true
+          grep -E "Worst-case (setup|hold) slack is" build.log | sed 's/^/::notice::/' || true
+          grep -q "Timing requirements not met" output_files/NeoGeo.sta.rpt 2>/dev/null &&
+            echo "::warning::Timing requirements not met" || true
+          status timing "$(grep -oE "Worst-case (setup|hold) slack is -?[0-9.]+" build.log | sed 's/Worst-case //; s/ slack is//' | tr '\n' ' ')"
+          exit $(cat build.rc)
+
+      - name: Worst paths
+        if: always()
+        shell: bash
+        run: |
+          [ -f output_files/NeoGeo.sta.rpt ] || exit 0
+          cat > worst.tcl <<'EOT'
+          project_open NeoGeo
+          create_timing_netlist
+          read_sdc
+          update_timing_netlist
+          foreach_in_collection p [get_timing_paths -setup -npaths 60 -nworst 1] {
+            puts [format "PATH %7.3f %s %s -> %s" [get_path_info $p -slack] \
+              [get_clock_info -name [get_path_info $p -to_clock]] \
+              [get_node_info -name [get_path_info $p -from]] [get_node_info -name [get_path_info $p -to]]]
+          }
+          project_close
+          EOT
+          docker run --rm -v "$PWD":/build -w /build theypsilon/quartus-lite-c5:17.0.2.docker0 \
+            /opt/intelFPGA_lite/quartus/bin/quartus_sta -t worst.tcl 2>&1 | grep "^PATH" || true
+
+      - name: Log
+        if: always()
+        shell: bash
+        run: |
+          grep -E "^Error( \(|:)" build.log | head -20 | sed 's/^/::error::/' || true
+          echo "::notice title=errors and critical warnings::$(grep -iE "error|critical warning" build.log | grep -v "0 errors" | head -40 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          echo "::notice title=end of log::$(tail -40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          cat output_files/NeoGeo.fit.summary 2>/dev/null || true
+
+      - name: SD card package
+        run: |
+          mkdir -p sd/_Console
+          cp output_files/NeoGeo.rbf sd/_Console/NeoGeo_SS_$(date +%Y%m%d).rbf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeoGeo_SS_sd
+          path: sd/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports
+          path: |
+            output_files/*.summary
+            output_files/NeoGeo.sta.rpt
+            build.log
