@@ -1,21 +1,42 @@
-# Compile the core with Quartus 17.0 Lite and keep the .rbf plus the fitter/timing
-# summaries as downloadable artifacts.
+# Compile the core with Quartus 17.0 Lite (the image used by MiSTer-unstable-nightlies) with
+# several fitter seeds in parallel: when the device is nearly full the timing result depends on
+# the placement. The last job keeps the seed with the best timing as the NeoGeo_SS_sd artifact.
 name: build
 
 on:
   push:
   workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Fitter seeds, as a JSON list'
+        required: false
+        default: '[1, 2, 3, 4, 5]'
 
 permissions:
   contents: read
   statuses: write   # stage results as commit statuses, readable while the build runs
 
+# a newer push on the same branch makes the running builds useless
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: build (seed ${{ matrix.seed }})
     runs-on: ubuntu-24.04
     timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(inputs.seeds || '[1, 2, 3, 4, 5]') }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Fitter seed
+        run: |
+          sed -i 's/^set_global_assignment -name SEED .*/set_global_assignment -name SEED ${{ matrix.seed }}/' NeoGeo.qsf
+          grep -n "name SEED" NeoGeo.qsf
 
       - name: Free disk space for the Quartus image
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -23,7 +44,7 @@ jobs:
       - name: Status helper
         run: |
           cat > "$RUNNER_TEMP/status.sh" <<'EOS'
-          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/$1" \
+          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/seed${{ matrix.seed }}/$1" \
             -f description="$(echo "$2" | cut -c1-139)" > /dev/null || true; }
           EOS
           echo "BASH_ENV=$RUNNER_TEMP/status.sh" >> "$GITHUB_ENV"
@@ -62,6 +83,12 @@ jobs:
           grep -q "Timing requirements not met" output_files/NeoGeo.sta.rpt 2>/dev/null &&
             echo "::warning::Timing requirements not met" || true
           status timing "$(grep -oE "Worst-case (setup|hold) slack is -?[0-9.]+" build.log | sed 's/Worst-case //; s/ slack is//' | tr '\n' ' ')"
+          # worst setup and hold slack over all clocks, setup TNS summed over all clocks
+          setup=$(grep -oE "Worst-case setup slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
+          hold=$(grep -oE "Worst-case hold slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
+          tns=$(awk '/^Type/ {s = ($3 == "Setup")} /^TNS/ && s {t += $3} END {printf "%.3f", t}' output_files/NeoGeo.sta.summary)
+          mkdir -p timing && echo "${{ matrix.seed }} ${setup:-nan} ${hold:-nan} $tns" > timing/seed${{ matrix.seed }}.txt
+          cat timing/seed${{ matrix.seed }}.txt
           exit $(cat build.rc)
 
       - name: Worst paths
@@ -100,14 +127,69 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NeoGeo_SS_sd
+          name: NeoGeo_SS_sd_seed${{ matrix.seed }}
           path: sd/
+          include-hidden-files: true
+          retention-days: 5
+
+      # uploaded after the package, so that every seed in the pick has one
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timing_seed${{ matrix.seed }}
+          path: timing/
+          retention-days: 5
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: reports
+          name: reports_seed${{ matrix.seed }}
           path: |
             output_files/*.summary
             output_files/NeoGeo.sta.rpt
             build.log
+
+  # the seed with hold met and the best worst-case setup slack (then the smallest TNS)
+  pick:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: timing_seed*
+          merge-multiple: true
+          path: timing
+
+      - name: Best seed
+        id: best
+        shell: bash
+        run: |
+          cat timing/*.txt | sort -n > all.txt
+          best=$(awk '$2 != "nan" && $3 != "nan" && $3 >= 0' all.txt | sort -k2,2gr -k4,4gr | head -1 | cut -d' ' -f1)
+          [ -n "$best" ] || { echo "::error::no seed with hold timing met"; exit 1; }
+          {
+            echo "| seed | worst setup | worst hold | setup TNS |"
+            echo "|---|---|---|---|"
+            awk -v b=$best '{m = ($1 == b) ? " **(kept)**" : ""; print "| " $1 m " | " $2 " | " $3 " | " $4 " |"}' all.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::kept seed $best: $(awk -v b=$best '$1 == b {print "setup " $2 ", hold " $3 ", TNS " $4}' all.txt)"
+          echo "seed=$best" >> "$GITHUB_OUTPUT"
+          echo "desc=seed $(awk -v b=$best '$1 == b {print $1 ": setup " $2 " hold " $3 " TNS " $4}' all.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: NeoGeo_SS_sd_seed${{ steps.best.outputs.seed }}
+          path: sd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NeoGeo_SS_sd
+          path: sd/
+          include-hidden-files: true
+
+      - name: Status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/best" \
+            -f description="${{ steps.best.outputs.desc }}" > /dev/null || true
