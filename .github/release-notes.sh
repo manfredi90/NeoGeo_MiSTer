@@ -4,8 +4,14 @@
 # hold savestate logic (states saved with the previous release might then not load).
 # Usage: release-notes.sh "<timing description>"   (run in a full clone, HEAD = the build)
 set -e
-up=origin/master
-git rev-parse -q --verify "$up" > /dev/null || up=origin/main
+# the upstream core itself, so that a build made before the nightly sync is described right too
+parent=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.parent.full_name + " " + .parent.default_branch' 2> /dev/null || true)
+if [ -n "$GITHUB_REPOSITORY" ] && [ -n "$parent" ] && git fetch -q "https://github.com/${parent% *}" "${parent#* }"; then
+  up=$(git rev-parse FETCH_HEAD)
+else
+  up=origin/master
+  git rev-parse -q --verify "$up" > /dev/null || up=origin/main
+fi
 base=$(git merge-base HEAD "$up")
 
 echo "Built on upstream $(git log -1 --format='%h (%ad)' --date=short "$base"), savestate branch $(git rev-parse --short HEAD)."
@@ -23,12 +29,15 @@ echo "Upstream:"; echo "${upstream:-- none}"
 echo "Savestate branch:"; echo "${ours:-- none}"
 
 # files the savestate patch changes, and those of them changed since the previous release
-patch=$(git diff --name-only "$base" HEAD -- rtl '*.sv' '*.v' '*.vhd' ':!sim' ':!savestate' ':!.github' | sort)
+patch=$(git diff --name-only "$base" HEAD -- rtl '*.sv' '*.v' '*.vhd' ':!sim' ':!savestate' ':!.github' ':!rtl/md_core_ss.*' | sort)
 touched=$(git diff --name-only "$prev" HEAD | sort)
 risky=$(comm -12 <(echo "$patch") <(echo "$touched"))
 if [ -n "$risky" ]; then
   echo
   echo "> [!WARNING]"
-  echo "> These changes touch files with savestate logic: states saved with $prev may not load."
+  echo "> These changes touch files with savestate logic: check that states saved with $prev still load."
   echo "$risky" | sed 's/^/> - /'
 fi
+
+# what a core adds of its own (e.g. a savestate layout change and how to convert)
+[ ! -f .github/release-notes-extra.sh ] || bash .github/release-notes-extra.sh "$prev"
