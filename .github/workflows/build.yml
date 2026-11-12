@@ -269,12 +269,21 @@ jobs:
         shell: bash
         run: bash .github/release-notes.sh "${{ needs.pick.outputs.desc }}" > notes.md && cat notes.md
 
+      # every file of the SD card package is an asset; sd-files.json gives each one its path
+      # on the SD card, for the Downloader database (manfredi90/MiSTer_db)
       - name: Publish
         shell: bash
         run: |
           rbf=$(ls sd/_Console/*.rbf)
+          (cd sd && find . -type f | sed 's|^\./||' | sort) > files.txt
+          python3 -c '
+          import json, os, sys
+          paths = open("files.txt").read().split()
+          names = [os.path.basename(p) for p in paths]
+          if len(set(names)) != len(names): sys.exit("two package files with the same name")
+          json.dump(dict(zip(names, paths)), open("sd-files.json", "w"), indent=1)'
           tag="ss-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true   # a re-run replaces it
-          gh release create "$tag" "$rbf" --prerelease --target "$(git rev-parse HEAD)" \
-            --title "$(basename "$rbf" .rbf)" --notes-file notes.md
+          gh release create "$tag" $(sed 's|^|sd/|' files.txt) sd-files.json --prerelease \
+            --target "$(git rev-parse HEAD)" --title "$(basename "$rbf" .rbf)" --notes-file notes.md
           echo "::notice::published $tag (pre-release)"

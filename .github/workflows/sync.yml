@@ -66,8 +66,12 @@ jobs:
               git merge --abort
               exit 1
             fi
-            git push origin HEAD:savestates
           fi
+          # per-core follow-up of an upstream merge (e.g. regenerating generated sources)
+          if [ -f .github/sync-hook.sh ] && [ "$(git rev-parse HEAD)" != "$before" ]; then
+            bash .github/sync-hook.sh "$before"
+          fi
+          [ "$(git rev-parse HEAD)" = "$before" ] || git push origin HEAD:savestates
 
           # changes that do not end up in the RBF (upstream release RBFs, docs) need no build
           changed=$(git diff --name-only "$before" HEAD -- . ':!releases' ':!docs' ':!*.md' ':!.github')
