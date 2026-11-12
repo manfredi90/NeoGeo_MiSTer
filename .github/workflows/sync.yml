@@ -1,5 +1,5 @@
 # Every night: bring master up to the upstream core, merge it into savestates and, when the merge
-# changed anything that goes into the RBF, build it and publish a pre-release (build.yml).
+# changed anything that goes into the RBF, build it and publish a release (build.yml).
 # A merge conflict stops here with a failed run: resolve it by hand on savestates.
 # Runs from the default branch, which must be savestates for the schedule to see this file.
 name: sync

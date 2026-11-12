@@ -1,6 +1,6 @@
 #!/bin/bash
 # Release notes for build.yml: the upstream commit the build sits on, the timing of the kept seed,
-# what changed since the latest full release, and a warning when those changes touch files that
+# what changed since the previous release, and a warning when those changes touch files that
 # hold savestate logic (states saved with the previous release might then not load).
 # Usage: release-notes.sh "<timing description>"   (run in a full clone, HEAD = the build)
 set -e
@@ -17,7 +17,7 @@ base=$(git merge-base HEAD "$up")
 echo "Built on upstream $(git log -1 --format='%h (%ad)' --date=short "$base"), savestate branch $(git rev-parse --short HEAD)."
 echo "Timing, $1."
 
-prev=$(gh release view --json tagName --jq .tagName 2> /dev/null || true)   # latest full release
+prev=$(gh release view --json tagName --jq .tagName 2> /dev/null || true)   # the previous release
 [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" > /dev/null || exit 0
 pbase=$(git merge-base "$prev" "$up")
 

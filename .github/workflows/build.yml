@@ -2,7 +2,7 @@
 # several fitter seeds in parallel: when the device is nearly full the timing result depends on
 # the placement. The pick job keeps the seed with the best timing as the NeoGeo_SS_sd
 # artifact; on the savestates branch (and when sync.yml calls it) the release job then publishes
-# it as a GitHub pre-release, to be promoted to a full release once tested on the MiSTer.
+# it as a GitHub release, which the Downloader database (manfredi90/MiSTer_db) picks up.
 name: build
 
 on:
@@ -14,7 +14,7 @@ on:
         required: false
         default: '[1, 2, 3, 4, 5]'
       release:
-        description: 'Publish the best seed as a pre-release'
+        description: 'Publish the best seed as a release'
         type: boolean
         default: false
   workflow_call:
@@ -245,7 +245,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/${{ inputs.ref || github.sha }}" -f state=success -f context="quartus/best" \
             -f description="${{ steps.best.outputs.desc }}" > /dev/null || true
 
-  # a pre-release with the RBF and what changed upstream since the previous release
+  # a release with the SD card package and what changed upstream since the previous release
   release:
     needs: pick
     if: ${{ !cancelled() && needs.pick.result == 'success' && (inputs.release || (github.event_name == 'push' && github.ref == 'refs/heads/savestates')) }}
@@ -284,6 +284,6 @@ jobs:
           json.dump(dict(zip(names, paths)), open("sd-files.json", "w"), indent=1)'
           tag="ss-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
           gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true   # a re-run replaces it
-          gh release create "$tag" $(sed 's|^|sd/|' files.txt) sd-files.json --prerelease \
+          gh release create "$tag" $(sed 's|^|sd/|' files.txt) sd-files.json --latest \
             --target "$(git rev-parse HEAD)" --title "$(basename "$rbf" .rbf)" --notes-file notes.md
-          echo "::notice::published $tag (pre-release)"
+          echo "::notice::published $tag"
