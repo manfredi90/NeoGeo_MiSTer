@@ -1,0 +1,86 @@
+# Every night: bring master up to the upstream core, merge it into savestates and, when the merge
+# changed anything that goes into the RBF, build it and publish a pre-release (build.yml).
+# A merge conflict stops here with a failed run: resolve it by hand on savestates.
+# Runs from the default branch, which must be savestates for the schedule to see this file.
+name: sync
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      build:
+        description: 'Build and release even if upstream has not changed'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  statuses: write
+  actions: write   # keepalive below
+
+concurrency:
+  group: sync
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.merge.outputs.sha }}
+      build: ${{ steps.merge.outputs.build }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # GitHub turns off the schedule of a public repo after 60 days without activity:
+      # enabling the workflow again restarts the count
+      - name: Keepalive
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/sync.yml/enable" || true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: savestates
+          fetch-depth: 0
+
+      - name: Merge upstream
+        id: merge
+        shell: bash
+        run: |
+          upstream=$(gh api "repos/$GITHUB_REPOSITORY" --jq .parent.full_name)
+          branch=$(gh api "repos/$upstream" --jq .default_branch)
+          git fetch -q "https://github.com/$upstream" "$branch"
+          new=$(git rev-parse FETCH_HEAD)
+          echo "upstream $upstream $branch at $(git log -1 --format='%h %s' $new)"
+
+          # master is a plain copy of upstream: fast-forward only
+          if [ "$(git rev-parse "origin/$branch")" != "$new" ]; then
+            git push origin "$new:refs/heads/$branch"
+            echo "::notice::$branch moved to upstream $(git rev-parse --short $new)"
+          fi
+
+          git config user.name manfredi90
+          git config user.email manfredi90@gmail.com
+          before=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$new" HEAD; then
+            if ! git merge --no-edit -m "Merge upstream $(git rev-parse --short $new)" "$new"; then
+              echo "::error::merge conflict with upstream $(git rev-parse --short $new): $(git diff --name-only --diff-filter=U | tr '\n' ' ')"
+              git merge --abort
+              exit 1
+            fi
+            git push origin HEAD:savestates
+          fi
+
+          # changes that do not end up in the RBF (upstream release RBFs, docs) need no build
+          changed=$(git diff --name-only "$before" HEAD -- . ':!releases' ':!docs' ':!*.md' ':!.github')
+          build=false
+          [ -n "$changed" ] || [ "${{ inputs.build }}" = true ] && build=true
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "::notice::savestates at $(git rev-parse --short HEAD), build: $build"
+
+  build:
+    needs: sync
+    if: ${{ needs.sync.outputs.build == 'true' }}
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.sync.outputs.sha }}
+      release: true

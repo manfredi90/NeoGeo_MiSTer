@@ -1,6 +1,8 @@
 # Compile the core with Quartus 17.0 Lite (the image used by MiSTer-unstable-nightlies) with
 # several fitter seeds in parallel: when the device is nearly full the timing result depends on
-# the placement. The last job keeps the seed with the best timing as the NeoGeo_SS_sd artifact.
+# the placement. The pick job keeps the seed with the best timing as the NeoGeo_SS_sd
+# artifact; on the savestates branch (and when sync.yml calls it) the release job then publishes
+# it as a GitHub pre-release, to be promoted to a full release once tested on the MiSTer.
 name: build
 
 on:
@@ -11,6 +13,22 @@ on:
         description: 'Fitter seeds, as a JSON list'
         required: false
         default: '[1, 2, 3, 4, 5]'
+      release:
+        description: 'Publish the best seed as a pre-release'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+      seeds:
+        type: string
+        required: false
+        default: '[1, 2, 3, 4, 5]'
+      release:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -18,7 +36,7 @@ permissions:
 
 # a newer push on the same branch makes the running builds useless
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,6 +50,8 @@ jobs:
         seed: ${{ fromJSON(inputs.seeds || '[1, 2, 3, 4, 5]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Fitter seed
         run: |
@@ -44,7 +64,7 @@ jobs:
       - name: Status helper
         run: |
           cat > "$RUNNER_TEMP/status.sh" <<'EOS'
-          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/seed${{ matrix.seed }}/$1" \
+          status() { gh api "repos/$GITHUB_REPOSITORY/statuses/$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" -f state=success -f context="quartus/seed${{ matrix.seed }}/$1" \
             -f description="$(echo "$2" | cut -c1-139)" > /dev/null || true; }
           EOS
           echo "BASH_ENV=$RUNNER_TEMP/status.sh" >> "$GITHUB_ENV"
@@ -181,6 +201,8 @@ jobs:
     needs: build
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    outputs:
+      desc: ${{ steps.best.outputs.desc }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -220,5 +242,39 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" -f state=success -f context="quartus/best" \
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ inputs.ref || github.sha }}" -f state=success -f context="quartus/best" \
             -f description="${{ steps.best.outputs.desc }}" > /dev/null || true
+
+  # a pre-release with the RBF and what changed upstream since the previous release
+  release:
+    needs: pick
+    if: ${{ !cancelled() && needs.pick.result == 'success' && (inputs.release || (github.event_name == 'push' && github.ref == 'refs/heads/savestates')) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: NeoGeo_SS_sd
+          path: sd
+
+      - name: Notes
+        shell: bash
+        run: bash .github/release-notes.sh "${{ needs.pick.outputs.desc }}" > notes.md && cat notes.md
+
+      - name: Publish
+        shell: bash
+        run: |
+          rbf=$(ls sd/_Console/*.rbf)
+          tag="ss-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
+          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true   # a re-run replaces it
+          gh release create "$tag" "$rbf" --prerelease --target "$(git rev-parse HEAD)" \
+            --title "$(basename "$rbf" .rbf)" --notes-file notes.md
+          echo "::notice::published $tag (pre-release)"
