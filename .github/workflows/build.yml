@@ -1,8 +1,8 @@
 # Compile the core with Quartus 17.0 Lite (the image used by MiSTer-unstable-nightlies) with
 # several fitter seeds in parallel: when the device is nearly full the timing result depends on
 # the placement. The pick job keeps the seed with the best timing as the NeoGeo_SS_sd
-# artifact; on the savestates branch (and when sync.yml calls it) the release job then publishes
-# it as a GitHub release, which the Downloader database (manfredi90/MiSTer_db) picks up.
+# artifact; on the savestates branch (and when sync.yml calls it) the release job then commits
+# it to releases/ (publish.sh), where the Downloader database (manfredi90/MiSTer_db) picks it up.
 name: build
 
 on:
@@ -14,7 +14,7 @@ on:
         required: false
         default: '[1, 2, 3, 4, 5]'
       release:
-        description: 'Publish the best seed as a release'
+        description: 'Publish the best seed in releases/'
         type: boolean
         default: false
   workflow_call:
@@ -260,7 +260,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/${{ inputs.ref || github.sha }}" -f state=success -f context="quartus/best" \
             -f description="${{ steps.best.outputs.desc }}" > /dev/null || true
 
-  # a release with the SD card package and what changed upstream since the previous release
+  # publish the SD card package on the savestates branch, in releases/ like the upstream cores
   release:
     needs: pick
     if: ${{ !cancelled() && needs.pick.result == 'success' && (inputs.release || (github.event_name == 'push' && github.ref == 'refs/heads/savestates')) }}
@@ -280,25 +280,6 @@ jobs:
           name: NeoGeo_SS_sd
           path: sd
 
-      - name: Notes
-        shell: bash
-        run: bash .github/release-notes.sh "${{ needs.pick.outputs.desc }}" > notes.md && cat notes.md
-
-      # every file of the SD card package is an asset; sd-files.json gives each one its path
-      # on the SD card, for the Downloader database (manfredi90/MiSTer_db)
       - name: Publish
         shell: bash
-        run: |
-          rbf=$(ls sd/_Console/*.rbf)
-          (cd sd && find . -type f | sed 's|^\./||' | sort) > files.txt
-          python3 -c '
-          import json, os, sys
-          paths = open("files.txt").read().split()
-          names = [os.path.basename(p) for p in paths]
-          if len(set(names)) != len(names): sys.exit("two package files with the same name")
-          json.dump(dict(zip(names, paths)), open("sd-files.json", "w"), indent=1)'
-          tag="ss-$(date -u +%Y%m%d)-$(git rev-parse --short=7 HEAD)"
-          gh release delete "$tag" --yes --cleanup-tag 2>/dev/null || true   # a re-run replaces it
-          gh release create "$tag" $(sed 's|^|sd/|' files.txt) sd-files.json --latest \
-            --target "$(git rev-parse HEAD)" --title "$(basename "$rbf" .rbf)" --notes-file notes.md
-          echo "::notice::published $tag"
+        run: bash .github/publish.sh "${{ needs.pick.outputs.desc }}"

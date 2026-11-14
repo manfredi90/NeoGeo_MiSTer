@@ -17,14 +17,15 @@ base=$(git merge-base HEAD "$up")
 echo "Built on upstream $(git log -1 --format='%h (%ad)' --date=short "$base"), savestate branch $(git rev-parse --short HEAD)."
 echo "Timing, $1."
 
-prev=$(gh release view --json tagName --jq .tagName 2> /dev/null || true)   # the previous release
-[ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" > /dev/null || exit 0
+# the previous publish: the last commit that changed releases/ss-files.json
+prev=$(git log -1 --format=%h origin/savestates -- releases/ss-files.json 2> /dev/null || true)
+[ -n "$prev" ] || exit 0
 pbase=$(git merge-base "$prev" "$up")
 
 echo
-echo "### Changes since $prev"
+echo "### Changes since $(git log -1 --format=%s "$prev" | sed 's/^Release //') ($prev)"
 upstream=$(git log --no-merges --format='- %s (%h)' "$pbase..$base")
-ours=$(git log --no-merges --format='- %s (%h)' "$prev..HEAD" --not "$up" -- . ':!.github')
+ours=$(git log --no-merges --format='- %s (%h)' "$prev..HEAD" --not "$up" -- . ':!.github' ':!releases')
 echo "Upstream:"; echo "${upstream:-- none}"
 echo "Savestate branch:"; echo "${ours:-- none}"
 
@@ -34,9 +35,9 @@ touched=$(git diff --name-only "$prev" HEAD | sort)
 risky=$(comm -12 <(echo "$patch") <(echo "$touched"))
 if [ -n "$risky" ]; then
   echo
-  echo "> [!WARNING]"
-  echo "> These changes touch files with savestate logic: check that states saved with $prev still load."
-  echo "$risky" | sed 's/^/> - /'
+  echo "Warning: these changes touch files with savestate logic, check that states saved with"
+  echo "the previous release still load:"
+  echo "$risky" | sed 's/^/- /'
 fi
 
 # what a core adds of its own (e.g. a savestate layout change and how to convert)
