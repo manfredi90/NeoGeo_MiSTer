@@ -11,7 +11,7 @@ set -e
 built=$(git rev-parse HEAD)
 notes=$(bash .github/release-notes.sh "$1")   # compares with the previous publish
 
-git fetch -q origin savestates
+git fetch -q origin +savestates:refs/remotes/origin/savestates
 git checkout -q -B savestates origin/savestates
 git merge-base --is-ancestor "$built" HEAD || { echo "::error::savestates no longer contains $built"; exit 1; }
 [ "$(git rev-parse HEAD)" = "$built" ] || notes="$notes
